@@ -1,0 +1,4 @@
+# pnpm 11 把构建脚本允许清单放在这里（package.json 的 "pnpm" 字段已不再被读取）。
+# esbuild 需要执行安装脚本以就位平台二进制，因此显式允许。
+allowBuilds:
+  esbuild: true

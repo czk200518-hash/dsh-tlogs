@@ -1,0 +1,50 @@
+# tlogs bundle patch
+#
+# 作为 profile bundle 层（package.json 的 dsh.bundle.patch 字段）应用，
+# 把本插件的 Loader 行插入 profile roster。
+#
+# node 半（exports "."）在 host 进程运行：拉取用量、管理凭据、注册 query_token_usage 工具；
+# dsh.client 声明让浏览器半（exports "./client"，served at /plugins/dsh-tlogs/client.js）
+# 在 GUI 中加载，并向侧边栏页脚的 sidebar.footer.action 席位注册内嵌组件。
+- insert:
+    - id: tlogs
+      name: 'dsh-tlogs'
+      config:
+        # 可选：手动指定 userToken（不推荐；优先使用自动获取 / 桌面登录）
+        platformUserToken: ''
+        # 起始查询月份（与权威 Python 脚本默认一致）
+        startYear: 2024
+        startMonth: 4
+        # 每次月度请求间隔（毫秒，与 Python 的 time.sleep 对应）
+        requestIntervalMs: 1000
+        # 缓存时长（秒）
+        cacheTTL:
+          total: 1800
+          current: 300
+        # 内嵌组件默认展开状态
+        defaultExpanded: false
+        # 紧凑条上显示哪些指标。
+        # 默认只有「总计 + 今日」；本周/本月在展开面板里看。
+        # 四项并排会把紧凑条挤爆，末尾数字被裁掉，所以不放默认值里。
+        compactMetrics:
+          - total
+          - today
+        # 是否启用详细面板
+        enableDetailView: true
+        # 数字格式：full（千分位）| short（K/M/B 缩写）
+        numberFormat: short
+        # 缓存目录；留空则用 <DSH_HOME>/tlogs 或 TLOGS_CACHE_DIR
+        cacheDir: ''
+        # 是否启用「当前项目消耗」卡片
+        enableProjectScope: true
+        # 是否允许历史缓存落盘（false 时完全不访问文件系统）
+        persistHistory: true
+        # 工具结果最多返回多少行
+        maxToolRows: 20
+        # 是否把用量数字暴露给模型（注册 query_token_usage）。
+        # 默认 false：工具的返回值会进入模型上下文，也就是把用量统计作为对话
+        # 内容发给模型提供方。默认只在侧边栏 UI 展示，模型看不到。
+        exposeUsageToModel: false        # 是否复用 DSH 已登录账号的 Platform 会话凭据（方案 D）。
+        # 默认 true（零配置取数）。设 false 后插件完全不接触 deepseekAccount，
+        # 只剩环境变量 / 配置 / 本机凭据 / 手动填写四条显式来源。
+        useAccountSession: true

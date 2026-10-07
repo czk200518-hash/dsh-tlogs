@@ -1,0 +1,26 @@
+node_modules/
+*.tsbuildinfo
+
+# Python 对拍脚本被 import 时产生的字节码（会内嵌参考脚本里的字面量，禁止入库）
+__pycache__/
+*.pyc
+
+# 注意：lib/ 是**故意提交**的。
+# DSH 只消费已构建的产物（package main = lib/index.js，浏览器半 = lib/client.js），
+# 提交它可以让 `git+https://…` 直接安装、也便于审查产物与源码是否一致。
+
+# 运行期缓存不应进入仓库
+.history.json
+*.tmp-*
+
+# 真实接口夹具（含账号私有用量），绝不入库；仓库内夹具是打码版本
+test/fixtures/local/
+
+# 权威参考 Python 脚本：第 24 行把 **真实 USER_TOKEN 明文写死**在源码里。
+# 它是工作区里的外部输入，本插件不依赖它（token 只从环境变量/配置/凭据系统读），
+# 因此绝不允许进入版本库。若你要为对拍保留它，请先改成从环境变量读取。
+deepseek_python_*.py
+
+# 本机私有拒绝清单：里面是**真实值**（真实用量数字、本机路径、邮箱），
+# 供 scripts/verify-secrets.mjs 做 0 命中检查。它本身就是敏感文件，绝不允许入库。
+.verify-secrets.local.txt

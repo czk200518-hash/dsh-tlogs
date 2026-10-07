@@ -1,0 +1,452 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>tlogs — 内嵌用量组件预览</title>
+<style>
+  /* 独立预览页的替身主题 token：真实数值由 @deepseek-ai/dsh-client-ui-theme 注入。
+     这里只为让预览在浅色/深色下都可读，颜色仅作示意。 */
+  body {
+    --dsw-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    --dsw-radius-xs: 4px;
+    --dsw-alias-label-primary: #1f2328;
+    --dsw-alias-label-tertiary: #8b949e;
+    --dsw-alias-bg-layer-1: #f6f8fa;
+    --dsw-alias-bg-layer-2: #ffffff;
+    --dsw-alias-bg-base: #ffffff;
+    --dsw-alias-border-l3: #d8dee4;
+    --dsw-alias-border-l4: #cfd8e0;
+    --dsw-alias-interactive-bg-hover: #eaeef2;
+    --dsw-alias-state-business-primary: #4d6bfe;
+    --dsw-alias-state-warn-primary: #bf8700;
+    --dsw-alias-state-error-primary: #cf222e;
+    margin: 0; padding: 24px; background: #ffffff; color: var(--dsw-alias-label-primary);
+    font-family: var(--dsw-font-family);
+  }
+  body[data-ds-dark-theme] {
+    --dsw-alias-label-primary: #e6edf3;
+    --dsw-alias-label-tertiary: #8b949e;
+    --dsw-alias-bg-layer-1: #21262d;
+    --dsw-alias-bg-layer-2: #161b22;
+    --dsw-alias-bg-base: #0d1117;
+    --dsw-alias-border-l3: #30363d;
+    --dsw-alias-border-l4: #3d444d;
+    --dsw-alias-interactive-bg-hover: #21262d;
+    background: #0d1117;
+  }
+  .warn { background: #fff8c5; color: #4d2d00; border: 1px solid #d4a72c66; padding: 10px 14px; border-radius: 6px; font-size: 13px; margin-bottom: 18px; }
+  body[data-ds-dark-theme] .warn { background: #3a2d00; color: #f0e6c8; }
+  h2 { font-size: 15px; margin: 26px 0 8px; }
+  h2 small { font-weight: 400; opacity: .6; font-size: 12px; }
+  .note { font-size: 12px; opacity: .65; margin: 6px 0 10px; line-height: 1.6; }
+  /* 模拟真实侧边栏：上方是工作区列表（会被顶上去），底部是页脚席位 */
+  .sidebar { width: 268px; border: 1px dashed var(--dsw-alias-border-l4); border-radius: 8px; display: flex; flex-direction: column; min-height: 330px; overflow: hidden; background: var(--dsw-alias-bg-layer-2); }
+  .sidebar.slim { width: 56px; min-height: 120px; }
+  .sidebar-head { padding: 8px 10px; font-size: 11px; opacity: .6; border-bottom: 1px solid var(--dsw-alias-border-l3); }
+  .fake-list { flex: 1 1 auto; padding: 8px 10px; font-size: 11px; opacity: .5; display: flex; flex-direction: column; gap: 7px; }
+  .fake-list i { display: block; height: 9px; border-radius: 3px; background: currentColor; opacity: .18; }
+  .fake-list i:nth-child(2) { width: 78%; } .fake-list i:nth-child(3) { width: 62%; }
+  .sidebar-foot { border-top: 1px solid var(--dsw-alias-border-l3); padding: 5px 7px; flex: 0 0 auto; }
+  .sidebar-foot .foot-label { font-size: 9px; opacity: .45; padding: 0 4px 4px; }
+  .row { display: flex; gap: 26px; flex-wrap: wrap; align-items: flex-start; }
+  .frame { border: 1px solid var(--dsw-alias-border-l4); border-radius: 10px; padding: 14px; background: var(--dsw-alias-bg-base); }
+  .frame > .cap { font-size: 11px; opacity: .6; margin-bottom: 10px; }
+</style>
+<!-- 组件自身的样式表：直接取自 src/client/styles.ts（构建产物 lib/client/styles.js） -->
+<style>
+
+.tlogs {
+  /* ---- 主题 token 别名（带 fallback，宿主 token 缺失也能渲染） ---- */
+  --tlogs-fg: var(--dsw-alias-label-primary, currentColor);
+  --tlogs-muted: var(--dsw-alias-label-tertiary, color-mix(in srgb, currentColor 58%, transparent));
+  --tlogs-card-bg: var(--dsw-alias-bg-layer-1, color-mix(in srgb, currentColor 6%, transparent));
+  --tlogs-panel-bg: var(--dsw-alias-bg-layer-2, color-mix(in srgb, currentColor 4%, transparent));
+  --tlogs-border: var(--dsw-alias-border-l3, color-mix(in srgb, currentColor 16%, transparent));
+  --tlogs-border-strong: var(--dsw-alias-border-l4, color-mix(in srgb, currentColor 24%, transparent));
+  --tlogs-hover: var(--dsw-alias-interactive-bg-hover, color-mix(in srgb, currentColor 9%, transparent));
+  --tlogs-accent: var(--dsw-alias-state-business-primary, #4d6bfe);
+  --tlogs-warn: var(--dsw-alias-state-warn-primary, #d97706);
+  --tlogs-danger: var(--dsw-alias-state-error-primary, #dc2626);
+  --tlogs-radius: var(--dsw-radius-xs, 4px);
+  --tlogs-gap: 6px;
+
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+  font-family: var(--dsw-font-family, inherit);
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--tlogs-fg);
+}
+.tlogs *, .tlogs *::before, .tlogs *::after { box-sizing: border-box; }
+.tlogs button, .tlogs input { font-family: inherit; }
+
+/* ---------- 形态 A：紧凑条（28–32px） ---------- */
+.tlogs-compact {
+  display: flex;
+  align-items: center;
+  gap: var(--tlogs-gap);
+  height: 30px;
+  min-height: 30px;
+  padding: 0 6px;
+  width: 100%;
+  min-width: 0;
+  border-radius: var(--tlogs-radius);
+  color: inherit;
+  cursor: pointer;
+}
+.tlogs-compact:hover { background: var(--tlogs-hover); }
+
+/* 收起态（图标栏）：只显示总计数字。原先这里放一个求和符号徽标，已按要求删除。 */
+.tlogs-collapsed-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: center;
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  color: var(--tlogs-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tlogs-collapsed .tlogs-compact { justify-content: center; padding: 0 2px; }
+
+/*
+ * 布局要点：**数字优先**。
+ *
+ * 原先 .tlogs-metric 里的标签和数字都是可压缩的，容器又是 overflow: hidden，
+ * 于是空间一紧就把整行末尾（含数字）裁掉 —— 实测表现为最后一项显示成
+ * 「本月 359」而不是完整的「359M」。
+ *
+ * 现在：数字用 flex 0 0 auto，永不压缩/截断；标签可压缩并可省略号收尾，
+ * 空间不足时先牺牲标签、保住数字。
+ */
+.tlogs-metrics {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.tlogs-metric { display: inline-flex; align-items: baseline; gap: 3px; min-width: 0; }
+.tlogs-metric-label {
+  color: var(--tlogs-muted);
+  font-size: 10px;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tlogs-metric-value {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.tlogs-sep { color: var(--tlogs-muted); opacity: 0.6; flex: 0 0 auto; }
+
+.tlogs-actions { display: inline-flex; align-items: center; gap: 2px; flex: 0 0 auto; }
+
+/* 展开/收起按钮：必须是**看得见**的按钮。
+   此前它是 10px、无边框、用 tertiary 灰的项目符号，在页脚底色上几乎不可辨认。 */
+.tlogs-iconbtn {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--tlogs-border-strong);
+  background: var(--tlogs-card-bg);
+  color: var(--tlogs-fg);
+  cursor: pointer;
+  border-radius: var(--tlogs-radius);
+  font-size: 11px;
+  line-height: 1;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.tlogs-iconbtn:hover {
+  color: var(--tlogs-accent);
+  border-color: var(--tlogs-accent);
+  background: var(--tlogs-hover);
+}
+.tlogs-iconbtn:focus-visible { outline: 2px solid var(--tlogs-accent); outline-offset: 1px; }
+
+/* 数据可能过期角标（需求 5.4） */
+.tlogs-stale { flex: 0 0 auto; font-size: 10px; color: var(--tlogs-warn); cursor: help; }
+
+/* 首次全量拉取进度 */
+.tlogs-progress {
+  display: block;
+  height: 2px;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 1px;
+  background: var(--tlogs-border);
+}
+.tlogs-progress > i {
+  display: block;
+  height: 100%;
+  background: var(--tlogs-accent);
+  transition: width 200ms ease-out;
+}
+
+/* ---------- 形态 B：展开面板（就地撑开） ---------- */
+.tlogs-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 6px 10px;
+  margin-top: 2px;
+  max-height: 300px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--tlogs-panel-bg);
+  border-top: 1px solid var(--tlogs-border);
+  border-radius: var(--tlogs-radius);
+  animation: tlogs-expand 140ms ease-out;
+}
+@keyframes tlogs-expand {
+  from { max-height: 0; opacity: 0; }
+  to { max-height: 300px; opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tlogs-panel { animation: none; }
+  .tlogs-progress > i { transition: none; }
+}
+
+.tlogs-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: var(--tlogs-radius);
+  font-size: 11px;
+  color: var(--tlogs-fg);
+  background: color-mix(in srgb, var(--tlogs-warn) 14%, transparent);
+}
+.tlogs-notice-danger { background: color-mix(in srgb, var(--tlogs-danger) 14%, transparent); }
+
+.tlogs-cards { display: grid; grid-template-columns: 1fr; gap: 6px; }
+.tlogs-w-full .tlogs-cards { grid-template-columns: 1fr 1fr; }
+
+.tlogs-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 7px 8px;
+  border-radius: var(--tlogs-radius);
+  background: var(--tlogs-card-bg);
+  border: 1px solid transparent;
+  min-width: 0;
+}
+.tlogs-card-clickable { cursor: pointer; }
+.tlogs-card-clickable:hover { border-color: var(--tlogs-border-strong); }
+.tlogs-card-clickable:focus-visible { outline: 2px solid var(--tlogs-accent); outline-offset: 1px; }
+.tlogs-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+.tlogs-card-title {
+  font-size: 10px;
+  color: var(--tlogs-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tlogs-card-total {
+  font-size: 15px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+.tlogs-card-total.is-error { font-size: 11px; font-weight: 400; color: var(--tlogs-muted); }
+.tlogs-card-split { display: flex; flex-wrap: wrap; gap: 6px 10px; font-size: 10px; color: var(--tlogs-muted); }
+.tlogs-card-split b { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--tlogs-fg); }
+
+.tlogs-footer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding-top: 2px;
+}
+.tlogs-btn {
+  appearance: none;
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: var(--tlogs-radius);
+  border: 1px solid var(--tlogs-border-strong);
+  background: transparent;
+  color: var(--tlogs-fg);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.tlogs-btn:hover { background: var(--tlogs-hover); }
+.tlogs-btn:focus-visible { outline: 2px solid var(--tlogs-accent); outline-offset: 1px; }
+.tlogs-btn:disabled { opacity: 0.45; cursor: default; }
+.tlogs-btn-primary { border-color: var(--tlogs-accent); color: var(--tlogs-accent); }
+
+.tlogs-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  padding: 3px 6px;
+  border-radius: var(--tlogs-radius);
+  border: 1px solid var(--tlogs-border-strong);
+  background: var(--dsw-alias-bg-base, transparent);
+  color: var(--tlogs-fg);
+}
+.tlogs-input:focus-visible { outline: 2px solid var(--tlogs-accent); outline-offset: 0; }
+
+/* ---------- 详细视图（同一容器内切换） ---------- */
+.tlogs-detail { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.tlogs-detail-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.tlogs-tabs { display: flex; flex-wrap: wrap; gap: 3px; }
+.tlogs-tab {
+  appearance: none;
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: var(--tlogs-card-bg);
+  color: var(--tlogs-fg);
+  cursor: pointer;
+}
+.tlogs-tab.is-active { border-color: var(--tlogs-accent); color: var(--tlogs-accent); background: transparent; }
+
+.tlogs-table { width: 100%; border-collapse: collapse; font-size: 10px; }
+.tlogs-table th, .tlogs-table td { padding: 3px 4px; text-align: right; white-space: nowrap; }
+.tlogs-table th:first-child, .tlogs-table td:first-child {
+  text-align: left;
+  max-width: 9em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tlogs-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--tlogs-panel-bg);
+  border-bottom: 1px solid var(--tlogs-border-strong);
+  color: var(--tlogs-muted);
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+}
+.tlogs-table tbody tr:hover { background: var(--tlogs-hover); }
+.tlogs-table td {
+  font-variant-numeric: tabular-nums;
+  border-bottom: 1px solid var(--tlogs-border);
+}
+.tlogs-empty { padding: 10px 4px; text-align: center; color: var(--tlogs-muted); font-size: 11px; }
+.tlogs-scroll { max-height: 190px; overflow-y: auto; overscroll-behavior: contain; }
+.tlogs-error { color: var(--tlogs-danger); font-size: 10px; line-height: 1.5; }
+/* 说明性提示（例如「内置登录不可用，请手动填写」）。 */
+.tlogs-hint { color: var(--tlogs-muted); font-size: 10px; line-height: 1.55; }
+
+</style>
+</head>
+<body>
+  <div class="warn">
+    <b>这是静态预览，不是应用内截图。</b>
+    组件与样式均取自构建产物本体（<code>lib/client/*.js</code> + <code>src/client/styles.ts</code> 的 CSS），
+    用 <code>react-dom/server</code> 渲染得到，没有手绘的假 UI。
+    页面上的 <code>--dsw-*</code> 颜色是<b>替身 token</b>；真实数值由
+    <code>@deepseek-ai/dsh-client-ui-theme</code> 在应用内注入，因此实际配色以 DSH 内为准。
+    获取真实截图的方式见 README「验证」一节。
+  </div>
+
+  <h2>形态 A：紧凑条 <small>高 30px（需求 28–32px），位于侧边栏页脚</small></h2>
+  <div class="note">下面是模拟的侧边栏：上方虚线块代表工作区列表，控件固定在页脚区域内，完全参与正常文档流（不使用浮动定位）。</div>
+  <div class="row">
+    <div class="sidebar">
+      <div class="sidebar-head">侧边栏（展开）</div>
+      <div class="fake-list"><i></i><i></i><i></i><i></i></div>
+      <div class="sidebar-foot">
+        <div class="foot-label">sidebar.footer.action 席位</div>
+        <div class="tlogs-compact" title="tlogs — DeepSeek 用量"><span class="tlogs-metrics"><span class="tlogs-metric" title="总 8,163,318,072 tokens"><span class="tlogs-metric-label">总</span><span class="tlogs-metric-value">8.2B</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="今日 165,703,639 tokens"><span class="tlogs-metric-label">今日</span><span class="tlogs-metric-value">166M</span></span></span><span class="tlogs-actions"><button type="button" class="tlogs-iconbtn" aria-expanded="false" aria-label="展开 tlogs 面板" title="展开">▾</button></span></div>
+      </div>
+    </div>
+    <div class="sidebar slim">
+      <div class="sidebar-head">收起</div>
+      <div class="sidebar-foot">
+        <div class="tlogs-compact tlogs-collapsed" title="tlogs — DeepSeek 用量"><span class="tlogs-collapsed-value" title="总 8,163,318,072 tokens">8.2B</span><span class="tlogs-actions"><button type="button" class="tlogs-iconbtn" aria-expanded="false" aria-label="展开 tlogs 面板" title="展开">▾</button></span></div>
+      </div>
+    </div>
+  </div>
+
+  <h2>形态 B：展开面板 <small>就地撑开，把上方内容顶上去（不覆盖）</small></h2>
+  <div class="note">注意上方工作区列表被顶起、面板占据页脚上方空间；底部一行是「详细数据 › / 刷新 / 退出登录」。</div>
+  <div class="sidebar" style="min-height:420px">
+    <div class="sidebar-head">侧边栏（展开 · 面板已展开）</div>
+    <div class="fake-list"><i></i><i></i></div>
+    <div class="sidebar-foot">
+      <div class="tlogs-compact" title="tlogs — DeepSeek 用量"><span class="tlogs-metrics"><span class="tlogs-metric" title="总 8,163,318,072 tokens"><span class="tlogs-metric-label">总</span><span class="tlogs-metric-value">8.2B</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="今日 165,703,639 tokens"><span class="tlogs-metric-label">今日</span><span class="tlogs-metric-value">166M</span></span></span><span class="tlogs-actions"><button type="button" class="tlogs-iconbtn" aria-expanded="false" aria-label="展开 tlogs 面板" title="展开">▾</button></span></div>
+      <div class="tlogs-panel"><div class="tlogs-hint">凭据来源：本机凭据（手动填写 / 登录）</div><div class="tlogs-cards"><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">总消耗 Token</span></div><span class="tlogs-card-total" title="8,163,318,072 tokens">8.2B</span><span class="tlogs-card-split"><span>输入 <b title="8,111,339,079">8.1B</b></span><span>输出 <b title="51,978,993">52M</b></span><span>请求 <b title="51,451">51.5K</b></span></span></div><div class="tlogs-card tlogs-card-clickable" role="button" tabindex="0" title="点击切换项目"><div class="tlogs-card-head"><span class="tlogs-card-title">当前项目消耗 · tlogs</span></div><span class="tlogs-card-total" title="1,213,323,122 tokens">1.2B</span><span class="tlogs-card-split"><span>输入 <b title="1,204,882,120">1.2B</b></span><span>输出 <b title="8,441,002">8.4M</b></span><span>请求 <b title="9,820">9.8K</b></span></span></div><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">今日消耗</span></div><span class="tlogs-card-total" title="165,703,639 tokens">166M</span><span class="tlogs-card-split"><span>输入 <b title="165,304,064">165M</b></span><span>输出 <b title="399,575">400K</b></span><span>请求 <b title="533">533</b></span></span></div><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">当周消耗</span></div><span class="tlogs-card-total" title="2,462,706,917 tokens">2.5B</span><span class="tlogs-card-split"><span>输入 <b title="2,450,674,688">2.5B</b></span><span>输出 <b title="12,032,229">12M</b></span><span>请求 <b title="10,141">10.1K</b></span></span></div><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">当月消耗</span></div><span class="tlogs-card-total" title="3,300,664,529 tokens">3.3B</span><span class="tlogs-card-split"><span>输入 <b title="3,286,234,976">3.3B</b></span><span>输出 <b title="14,429,553">14.4M</b></span><span>请求 <b title="12,593">12.6K</b></span></span></div></div><div class="tlogs-footer-actions"><button type="button" class="tlogs-btn">详细数据 ›</button><span class="tlogs-actions"><button type="button" class="tlogs-btn">刷新</button><button type="button" class="tlogs-btn" title="清除本机保存的 userToken">退出登录</button></span></div></div>
+    </div>
+  </div>
+
+  <h2>认证失效 <small>面板顶部提示重新登录（需求 2.4 / 5.2）</small></h2>
+  <div class="sidebar" style="min-height:380px">
+    <div class="sidebar-head">侧边栏（userToken 失效）</div>
+    <div class="fake-list"><i></i></div>
+    <div class="sidebar-foot">
+      <div class="tlogs-panel"><div class="tlogs-notice tlogs-notice-danger"><span>userToken 已失效，需要重新登录<span class="tlogs-hint"> —— 401 认证失败（userToken 失效）</span></span><span class="tlogs-actions"><button type="button" class="tlogs-btn tlogs-btn-primary" title="打开内置登录窗口">登录</button><button type="button" class="tlogs-btn" title="手动粘贴 userToken（方案 C）">手动填写</button></span></div><div class="tlogs-cards"><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">总消耗 Token</span></div><span class="tlogs-card-total" title="8,163,318,072 tokens">8.2B</span><span class="tlogs-card-split"><span>输入 <b title="8,111,339,079">8.1B</b></span><span>输出 <b title="51,978,993">52M</b></span><span>请求 <b title="51,451">51.5K</b></span></span></div><div class="tlogs-card tlogs-card-clickable" role="button" tabindex="0" title="点击切换项目"><div class="tlogs-card-head"><span class="tlogs-card-title">当前项目消耗 · tlogs</span></div><span class="tlogs-card-total" title="1,213,323,122 tokens">1.2B</span><span class="tlogs-card-split"><span>输入 <b title="1,204,882,120">1.2B</b></span><span>输出 <b title="8,441,002">8.4M</b></span><span>请求 <b title="9,820">9.8K</b></span></span></div><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">今日消耗</span></div><span class="tlogs-card-total" title="165,703,639 tokens">166M</span><span class="tlogs-card-split"><span>输入 <b title="165,304,064">165M</b></span><span>输出 <b title="399,575">400K</b></span><span>请求 <b title="533">533</b></span></span></div><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">当周消耗</span></div><span class="tlogs-card-total" title="2,462,706,917 tokens">2.5B</span><span class="tlogs-card-split"><span>输入 <b title="2,450,674,688">2.5B</b></span><span>输出 <b title="12,032,229">12M</b></span><span>请求 <b title="10,141">10.1K</b></span></span></div><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">当月消耗</span></div><span class="tlogs-card-total" title="3,300,664,529 tokens">3.3B</span><span class="tlogs-card-split"><span>输入 <b title="3,286,234,976">3.3B</b></span><span>输出 <b title="14,429,553">14.4M</b></span><span>请求 <b title="12,593">12.6K</b></span></span></div></div><div class="tlogs-footer-actions"><button type="button" class="tlogs-btn">详细数据 ›</button><span class="tlogs-actions"><button type="button" class="tlogs-btn">刷新</button><button type="button" class="tlogs-btn" title="清除本机保存的 userToken">退出登录</button></span></div></div>
+    </div>
+  </div>
+
+  <h2>详细视图 <small>同一容器内切换，不新开窗口 / 不弹 Modal（需求 1.4）</small></h2>
+  <div class="sidebar" style="min-height:420px;width:300px">
+    <div class="sidebar-head">侧边栏（详细数据）</div>
+    <div class="sidebar-foot"><div class="tlogs-panel tlogs-detail"><div class="tlogs-detail-head"><button type="button" class="tlogs-btn">‹ 返回</button><button type="button" class="tlogs-btn">刷新</button></div><div class="tlogs-tabs" role="tablist"><button type="button" role="tab" aria-selected="true" class="tlogs-tab is-active">模型</button><button type="button" role="tab" aria-selected="false" class="tlogs-tab">年</button><button type="button" role="tab" aria-selected="false" class="tlogs-tab">月</button><button type="button" role="tab" aria-selected="false" class="tlogs-tab">当月按天</button></div><div class="tlogs-scroll"><table class="tlogs-table"><thead><tr><th title="按名称排序" aria-sort="none">名称</th><th title="按输入排序" aria-sort="none">输入</th><th title="按输出排序" aria-sort="none">输出</th><th title="按总 Token排序" aria-sort="descending">总 Token ↓</th><th title="按请求排序" aria-sort="none">请求</th></tr></thead><tbody><tr><td title="deepseek-flash">deepseek-flash</td><td title="8,062,474,688">8,062,474,688</td><td title="51,120,229">51,120,229</td><td title="8,113,594,917">8,113,594,917</td><td title="50,141">50,141</td></tr><tr><td title="deepseek-v4-flash-vision-exp">deepseek-v4-flash-vision-exp</td><td title="522,440,832">522,440,832</td><td title="1,492,111">1,492,111</td><td title="523,932,943">523,932,943</td><td title="1,540">1,540</td></tr><tr><td title="deepseek-v4.1-flash-expires-on-0910">deepseek-v4.1-flash-expires-on-0910</td><td title="284,130,176">284,130,176</td><td title="896,095">896,095</td><td title="285,026,271">285,026,271</td><td title="903">903</td></tr><tr><td title="deepseek-v4-flash">deepseek-v4-flash</td><td title="60,288">60,288</td><td title="9,118">9,118</td><td title="69,406">69,406</td><td title="9">9</td></tr></tbody></table></div></div></div>
+  </div>
+
+  <h2>深色主题 <small>同一份组件与样式，仅主题 token 不同</small></h2>
+  <div class="row">
+    <div class="frame" data-ds-dark-theme style="background:#0d1117">
+      <div class="cap">紧凑条 + 展开面板（深色）</div>
+      <div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:6px">
+        <div class="tlogs-compact" title="tlogs — DeepSeek 用量"><span class="tlogs-metrics"><span class="tlogs-metric" title="总 8,163,318,072 tokens"><span class="tlogs-metric-label">总</span><span class="tlogs-metric-value">8.2B</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="今日 165,703,639 tokens"><span class="tlogs-metric-label">今日</span><span class="tlogs-metric-value">166M</span></span></span><span class="tlogs-actions"><button type="button" class="tlogs-iconbtn" aria-expanded="false" aria-label="展开 tlogs 面板" title="展开">▾</button></span></div>
+        <div class="tlogs-panel"><div class="tlogs-hint">凭据来源：本机凭据（手动填写 / 登录）</div><div class="tlogs-cards"><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">总消耗 Token</span></div><span class="tlogs-card-total" title="8,163,318,072 tokens">8.2B</span><span class="tlogs-card-split"><span>输入 <b title="8,111,339,079">8.1B</b></span><span>输出 <b title="51,978,993">52M</b></span><span>请求 <b title="51,451">51.5K</b></span></span></div><div class="tlogs-card tlogs-card-clickable" role="button" tabindex="0" title="点击切换项目"><div class="tlogs-card-head"><span class="tlogs-card-title">当前项目消耗 · tlogs</span></div><span class="tlogs-card-total" title="1,213,323,122 tokens">1.2B</span><span class="tlogs-card-split"><span>输入 <b title="1,204,882,120">1.2B</b></span><span>输出 <b title="8,441,002">8.4M</b></span><span>请求 <b title="9,820">9.8K</b></span></span></div><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">今日消耗</span></div><span class="tlogs-card-total" title="165,703,639 tokens">166M</span><span class="tlogs-card-split"><span>输入 <b title="165,304,064">165M</b></span><span>输出 <b title="399,575">400K</b></span><span>请求 <b title="533">533</b></span></span></div><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">当周消耗</span></div><span class="tlogs-card-total" title="2,462,706,917 tokens">2.5B</span><span class="tlogs-card-split"><span>输入 <b title="2,450,674,688">2.5B</b></span><span>输出 <b title="12,032,229">12M</b></span><span>请求 <b title="10,141">10.1K</b></span></span></div><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">当月消耗</span></div><span class="tlogs-card-total" title="3,300,664,529 tokens">3.3B</span><span class="tlogs-card-split"><span>输入 <b title="3,286,234,976">3.3B</b></span><span>输出 <b title="14,429,553">14.4M</b></span><span>请求 <b title="12,593">12.6K</b></span></span></div></div><div class="tlogs-footer-actions"><button type="button" class="tlogs-btn">详细数据 ›</button><span class="tlogs-actions"><button type="button" class="tlogs-btn">刷新</button><button type="button" class="tlogs-btn" title="清除本机保存的 userToken">退出登录</button></span></div></div>
+      </div>
+    </div>
+  </div>
+
+  <h2>宽度退化 <small>即使把 4 项指标都配回来，数字也不该被裁掉</small></h2>
+  <div class="note">
+    默认只放「总 + 今日」，因此正常宽度下绰绰有余。下面刻意把 4 项都放回来，
+    在最窄的侧边栏里验证：数字不可压缩、只有标签会让位 —— 若你看到数字自身被截断，
+    说明这个回归又回来了。
+  </div>
+  <div class="row">
+    <div class="sidebar" style="width:268px;min-height:110px">
+      <div class="sidebar-head">268px · 4 项指标</div>
+      <div class="sidebar-foot"><div class="tlogs-compact" title="tlogs — DeepSeek 用量"><span class="tlogs-metrics"><span class="tlogs-metric" title="总 8,163,318,072 tokens"><span class="tlogs-metric-label">总</span><span class="tlogs-metric-value">8.2B</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="今日 165,703,639 tokens"><span class="tlogs-metric-label">今日</span><span class="tlogs-metric-value">166M</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="本周 2,462,706,917 tokens"><span class="tlogs-metric-label">本周</span><span class="tlogs-metric-value">2.5B</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="本月 3,300,664,529 tokens"><span class="tlogs-metric-label">本月</span><span class="tlogs-metric-value">3.3B</span></span></span><span class="tlogs-actions"><button type="button" class="tlogs-iconbtn" aria-expanded="false" aria-label="展开 tlogs 面板" title="展开">▾</button></span></div></div>
+    </div>
+    <div class="sidebar" style="width:180px;min-height:110px">
+      <div class="sidebar-head">180px · 4 项指标（极窄）</div>
+      <div class="sidebar-foot"><div class="tlogs-compact" title="tlogs — DeepSeek 用量"><span class="tlogs-metrics"><span class="tlogs-metric" title="总 8,163,318,072 tokens"><span class="tlogs-metric-label">总</span><span class="tlogs-metric-value">8.2B</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="今日 165,703,639 tokens"><span class="tlogs-metric-label">今日</span><span class="tlogs-metric-value">166M</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="本周 2,462,706,917 tokens"><span class="tlogs-metric-label">本周</span><span class="tlogs-metric-value">2.5B</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="本月 3,300,664,529 tokens"><span class="tlogs-metric-label">本月</span><span class="tlogs-metric-value">3.3B</span></span></span><span class="tlogs-actions"><button type="button" class="tlogs-iconbtn" aria-expanded="false" aria-label="展开 tlogs 面板" title="展开">▾</button></span></div></div>
+    </div>
+  </div>
+
+  <h2 id="capture">在应用内截取真实截图</h2>
+  <div class="note">
+    把本插件装进 profile 并重启 DSH 后，侧边栏底部即会出现紧凑条；展开后可直接系统截图。
+    安装步骤见 README「安装」一节。本预览页无法替代真实截图，仅用于快速核对布局与两种主题下的可读性。
+  </div>
+</body>
+</html>

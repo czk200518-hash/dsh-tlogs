@@ -1,0 +1,81 @@
+{
+  "name": "dsh-tlogs",
+  "version": "0.1.0",
+  "description": "DSH 内嵌用量组件（tlogs = token logs）：在 DeepSeek Harness 侧边栏页脚常驻显示 DeepSeek 开放平台账号的 Token 用量（总会话/项目/今日/当周/当月），含紧凑条、就地展开面板、详细数据视图。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ],
+      "platform": "web"
+    }
+  },
+  "files": [
+    "lib",
+    "src",
+    "scripts",
+    "test",
+    "docs",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "npm run build:host && npm run build:client",
+    "build:host": "tsc -p tsconfig.json",
+    "build:client": "node scripts/build-client.mjs",
+    "build:preview": "node scripts/build-preview.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "pretest": "npm run build",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "golden": "node scripts/golden-live.mjs",
+    "verify:dsh": "node scripts/verify-dsh-manifest.mjs",
+    "verify:secrets": "node scripts/verify-secrets.mjs",
+    "check": "npm run verify:secrets && npm run typecheck && npm run build && npm test",
+    "prepublishOnly": "npm run check"
+  },
+  "dependencies": {
+    "schemastery": "^3.18.0"
+  },
+  "peerDependencies": {
+    "react": "^18.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "esbuild": "^0.25.0",
+    "jsdom": "^25.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.7.2",
+    "yaml": "^2.9.1"
+  },
+  "engines": {
+    "node": ">=22",
+    "dsh": ">=0.2.0-rc.2"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "deepseek",
+    "token",
+    "usage",
+    "tlogs",
+    "sidebar",
+    "cost"
+  ],
+  "license": "MIT"
+}
