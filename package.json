@@ -25,7 +25,6 @@
     "lib",
     "src",
     "scripts",
-    "test",
     "docs",
     "cordis.patch.yml",
     "README.md",
