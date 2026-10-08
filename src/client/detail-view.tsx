@@ -94,7 +94,16 @@ export function StatTable(props: StatTableProps): React.ReactElement {
             const c = rowCost(r)
             return (
               <tr key={r.key}>
-                <td title={r.label}>{r.label}</td>
+                <td title={r.label}>
+                  {/* 平台层级徽标：官方 / 第三方。火山方舟上跑的也是 deepseek-* 模型，
+                      所以必须按**通道**标注，不能靠模型名判断。 */}
+                  {r.tag ? (
+                    <span className="tlogs-src tlogs-src-inline" title={r.tagTitle ?? r.tag}>
+                      {r.tag}
+                    </span>
+                  ) : null}
+                  {r.label}
+                </td>
                 <td title={formatFull(r.stat.inputTokens)}>{formatFull(r.stat.inputTokens)}</td>
                 <td title={formatFull(r.stat.outputTokens)}>{formatFull(r.stat.outputTokens)}</td>
                 <td title={formatFull(r.stat.totalTokens)}>{formatFull(r.stat.totalTokens)}</td>

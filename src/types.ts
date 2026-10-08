@@ -172,22 +172,40 @@ export interface StatRow {
   key: string
   label: string
   stat: ScopeStat
+  /**
+   * 平台层级徽标（`官方` / `第三方`）。
+   *
+   * 为什么必须标：火山方舟上跑的也是 `deepseek-v4-flash` —— 「模型名像官方」与
+   * 「走的是官方平台」是两件事。徽标按**通道**判定，绝不按模型名（见
+   * `store/provider-meta.ts`）。
+   */
+  tag?: string
+  /** 徽标的 tooltip（说明具体是哪家平台）。 */
+  tagTitle?: string
 }
 
 /** 详细视图的完整数据。 */
 export interface DetailData {
-  /** 平台账单口径的按模型明细（只含 DeepSeek 官方通道）。 */
+  /**
+   * 按模型明细。
+   *
+   * 内容是**两路口径拼起来的**：平台账单的模型行（DeepSeek 官方通道，带官方金额）
+   * 加上本机口径里**非 DeepSeek 供应商**的模型行（`xiaomi · mimo-v2.6-flash` 这种，
+   * 平台完全看不到，没有金额）。DeepSeek 通道不并本机行 —— 平台已按模型计过，
+   * 再并就是重复计数。
+   */
   models: StatRow[]
+  /** `models` 里是否混入了本机口径的模型行（界面据此在表头加一句说明）。 */
+  modelsIncludeLocal?: boolean
   years: StatRow[]
   months: StatRow[]
   days: StatRow[]
   /**
-   * **本机口径**的「供应商 · 模型」明细（来自 DSH 会话日志）。
+   * **本机口径**的「供应商 · 模型」明细（来自 DSH 会话日志，含 DeepSeek 通道）。
    *
-   * 为什么单独一栏而不是并进 `models`：平台账单按模型给总量、且只覆盖 DeepSeek
-   * 官方通道；本机口径按 `provider:model` 给量、覆盖所有供应商（火山方舟 / 小米 /
-   * GLM / GPT…）。两者口径不同，混在一张表里会让人以为「平台的模型列表漏了」。
-   * 取不到本机数据时缺省（旧宿主）。
+   * 与 `models` 的分工：`models` 是「按模型的用量」（DeepSeek 通道来自平台账单、
+   * 别家模型来自本机）；这里则是「本机用过的每家供应商的每个模型」，用于回答
+   * 「这个模型是走哪条通道用的」。取不到本机数据时缺省（旧宿主）。
    */
   providers?: StatRow[]
   /** 本机口径覆盖的日期区间与天数（用于在表头标注「这份数据只覆盖这段时间」）。 */

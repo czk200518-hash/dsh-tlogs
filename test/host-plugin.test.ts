@@ -739,7 +739,11 @@ test('双路数据源端到端：没有平台凭据时，今日卡片仍由本�
     const today = snap!.value.cards.find((c) => c.scope === 'today')!
     assert.equal(today.stat.totalTokens, 1015, '今日应由本机口径给出（10 + 1000 + 5）')
     assert.equal(today.source?.kind, 'local', '来源应标记为本机口径')
-    assert.deepEqual(today.source?.otherProviders, [{ provider: 'xiaomi', tokens: 1015 }])
+    assert.deepEqual(
+      today.source?.otherProviders,
+      [{ provider: '小米', tokens: 1015 }],
+      '平台看不到的供应商用展示名下发（xiaomi → 小米）',
+    )
     assert.equal(snap!.value.localUsage?.available, true)
 
     // 总消耗也要含本机补充：平台这份 token 平台永远看不到，不加就永远缺一块。
@@ -750,14 +754,24 @@ test('双路数据源端到端：没有平台凭据时，今日卡片仍由本�
     // 详细数据的「供应商」页签：供应商 + 对应模型。
     const detail = (await handler('tlogs.detail')) as {
       value: {
-        providers?: Array<{ label: string; stat: { totalTokens: number } }>
+        models?: Array<{ label: string; tag?: string; stat: { totalTokens: number } }>
+        modelsIncludeLocal?: boolean
+        providers?: Array<{ label: string; tag?: string; stat: { totalTokens: number } }>
         localRange?: { from: string; to: string; days: number; files: number }
       }
     }
+    // 「模型」页签也必须能看见别家平台的模型 —— 平台账单里根本没有它们，
+    // 且必须标明平台层级（官方 / 第三方）：火山方舟上跑的也是 deepseek-* 模型。
     assert.deepEqual(
-      detail.value.providers?.map((r) => r.label),
-      ['xiaomi · mimo'],
-      '应记录供应商与对应模型',
+      detail.value.models?.map((r) => [r.tag, r.label]),
+      [['第三方', '小米 · mimo']],
+      '模型页签要并上本机口径里非 DeepSeek 供应商的模型，并标注「第三方」',
+    )
+    assert.equal(detail.value.modelsIncludeLocal, true)
+    assert.deepEqual(
+      detail.value.providers?.map((r) => [r.tag, r.label]),
+      [['第三方', '小米 · mimo']],
+      '应记录供应商与对应模型，并标注平台层级',
     )
     assert.equal(detail.value.providers?.[0]?.stat.totalTokens, 1015)
     assert.equal(detail.value.localRange?.days, 1, 'detail 应带本机口径的覆盖区间')

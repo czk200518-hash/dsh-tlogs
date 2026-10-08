@@ -34,7 +34,15 @@ import { publicProjectId } from './store/project.js'
 import { isDateKey, type ProjectHistoryStore } from './store/project-history.js'
 import { dateKey, inWindow, monthWindow, rollingWindow, todayWindow, weekWindow } from './store/dates.js'
 import { tokenTotal, type SessionUsageStore } from './store/session-usage.js'
-import { mergeTotal, mergeWindow, type MergedWindow } from './store/usage-merge.js'
+import { isDeepseekProvider, mergeTotal, mergeWindow, type MergedWindow } from './store/usage-merge.js'
+import {
+  OFFICIAL_BILLING_TAG,
+  OFFICIAL_BILLING_TITLE,
+  TIER_LABEL,
+  providerLabel,
+  providerTier,
+  providerTierTitle,
+} from './store/provider-meta.js'
 import {
   emptyMoney,
   emptyStat,
@@ -570,7 +578,8 @@ export class UsageService {
       platformTokens: tokenTotal(m.platform.raw),
       localTokens: m.local.totalTokens,
       localDeepseekTokens: m.localDeepseekTokens,
-      otherProviders: m.otherProviders,
+      // 下发给浏览器的是**展示名**（`xiaomi` → `小米`），tooltip 里直接可读。
+      otherProviders: m.otherProviders.map((p) => ({ provider: providerLabel(p.provider), tokens: p.tokens })),
       costPending: m.costPending,
     }
   }
@@ -1065,7 +1074,8 @@ export class UsageService {
     const report = this.report()
     const currency = this.currencyCode
 
-    const models: StatRow[] = Object.entries(report.models)
+    // 平台口径的模型行（只含 DeepSeek 官方通道，带官方金额）。
+    const platformModels: StatRow[] = Object.entries(report.models)
       .map(([key, s]) => {
         // 模型维度只有金额总额，没有五类拆分 —— 用 `singleBucketMoney` 承载，
         // UI 一律走 `moneyTotal()`（对五类求和，等于这个总额）。
@@ -1074,11 +1084,22 @@ export class UsageService {
           amount === undefined
             ? s
             : { ...s, cost: singleBucketMoney(amount), currency: report.currency }
-        return { key, label: key, stat }
+        // 平台账单行 = 官方平台（DeepSeek 开放平台）口径。
+        return { key, label: key, stat, tag: OFFICIAL_BILLING_TAG, tagTitle: OFFICIAL_BILLING_TITLE }
       })
       // 与 Python 一致：零用量且零请求的模型不展示（py:229-230）
       .filter((r) => isNonEmpty(r.stat))
       .sort((a, b) => b.stat.totalTokens - a.stat.totalTokens) // py:227 降序
+
+    /*
+     * 模型页签也要能看见**别家平台的模型**（火山方舟 / 小米 / GLM / GPT…）——
+     * 平台账单里根本没有它们，只列平台口径会让人以为「我就用了这几个模型」。
+     *
+     * 只并**非 DeepSeek 供应 商**的行：DeepSeek 通道的调用平台已经按模型计过，
+     * 再把本机同名行加进来就是重复计数（与卡片/总消耗同一条合并规则）。
+     */
+    const localModels = this.localOtherModelRows()
+    const models: StatRow[] = [...platformModels, ...localModels]
 
     const years: StatRow[] = Object.entries(report.yearly)
       .map(([key, s]) => ({ key, label: `${key} 年`, stat: s }))
@@ -1100,7 +1121,56 @@ export class UsageService {
       .filter((r) => isNonEmpty(r.stat))
       .sort((a, b) => b.key.localeCompare(a.key))
 
-    return { models, years, months, days, ...this.localDetail() }
+    return {
+      models,
+      years,
+      months,
+      days,
+      ...(localModels.length > 0 ? { modelsIncludeLocal: true } : {}),
+      ...this.localDetail(),
+    }
+  }
+
+  /**
+   * 本机口径里**非 DeepSeek 供应商**的模型行（`provider · model`）。
+   *
+   * 这些是平台账单完全看不到的模型（火山方舟 / 小米 / GLM / GPT…），因此可以安全地
+   * 并进「模型」页签；DeepSeek 通道的模型**不并**——平台已按模型计过，再并就是重复。
+   * 这些行没有金额（本机日志没有计价能力），表里显示 `—`。
+   */
+  private localOtherModelRows(): StatRow[] {
+    const local = this.opts.localUsage?.current
+    if (!this.config.localUsage || !local || local.days.length === 0) return []
+
+    const acc = new Map<string, { label: string; provider: string; stat: Stat }>()
+    for (const day of local.days) {
+      for (const p of day.byProvider) {
+        if (isDeepseekProvider(p.provider)) continue
+        const models = p.models && p.models.length > 0 ? p.models : [{ model: '', stat: p.stat }]
+        for (const m of models) {
+          // key 保持原始通道 id（稳定），label 用中文平台名（可读）。
+          const key = m.model ? `${p.provider} · ${m.model}` : p.provider
+          const label = m.model ? `${providerLabel(p.provider)} · ${m.model}` : providerLabel(p.provider)
+          let cur = acc.get(key)
+          if (!cur) {
+            cur = { label, provider: p.provider, stat: emptyStat() }
+            acc.set(key, cur)
+          }
+          addInto(cur.stat, m.stat)
+        }
+      }
+    }
+
+    return [...acc.entries()]
+      .map(([key, v]) => ({
+        key,
+        label: v.label,
+        stat: toScopeStat(v.stat),
+        tag: TIER_LABEL[providerTier(v.provider)],
+        tagTitle: providerTierTitle(v.provider),
+      }))
+      .filter((r) => isNonEmpty(r.stat))
+      .sort((a, b) => b.stat.totalTokens - a.stat.totalTokens)
   }
 
   /**
@@ -1117,25 +1187,33 @@ export class UsageService {
       return { localUnavailable: { reason: local?.reason ?? 'no-session-logs' } }
     }
 
-    /** key 用 `provider · model`，provider 层缺失模型时退化为只用 provider。 */
-    const acc = new Map<string, Stat>()
+    /** key 用 `provider · model`（原始通道 id，稳定）；label 用中文平台名（可读）。 */
+    const acc = new Map<string, { label: string; provider: string; stat: Stat }>()
     for (const day of local.days) {
       for (const p of day.byProvider) {
         const models = p.models && p.models.length > 0 ? p.models : [{ model: '', stat: p.stat }]
         for (const m of models) {
-          const label = m.model ? `${p.provider} · ${m.model}` : p.provider
-          let cur = acc.get(label)
+          const key = m.model ? `${p.provider} · ${m.model}` : p.provider
+          const label = m.model ? `${providerLabel(p.provider)} · ${m.model}` : providerLabel(p.provider)
+          let cur = acc.get(key)
           if (!cur) {
-            cur = emptyStat()
-            acc.set(label, cur)
+            cur = { label, provider: p.provider, stat: emptyStat() }
+            acc.set(key, cur)
           }
-          addInto(cur, m.stat)
+          addInto(cur.stat, m.stat)
         }
       }
     }
 
     const providers: StatRow[] = [...acc.entries()]
-      .map(([label, stat]) => ({ key: label, label, stat: toScopeStat(stat) }))
+      .map(([key, v]) => ({
+        key,
+        label: v.label,
+        stat: toScopeStat(v.stat),
+        // 官方 / 第三方按**通道**判定：火山方舟上的 deepseek-v4-flash 属于第三方。
+        tag: TIER_LABEL[providerTier(v.provider)],
+        tagTitle: providerTierTitle(v.provider),
+      }))
       .filter((r) => isNonEmpty(r.stat))
       .sort((a, b) => b.stat.totalTokens - a.stat.totalTokens)
 

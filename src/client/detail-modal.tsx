@@ -409,6 +409,15 @@ export function DetailModal(props: DetailModalProps): React.ReactElement {
                 }
               />
             </div>
+          ) : tab === 'models' && detail?.modelsIncludeLocal ? (
+            <div>
+              {/* 模型表混了两路口径，必须说明：平台行有官方金额，本机行（别家平台
+                  的模型）没有金额、且只覆盖会话日志还在的那些天。 */}
+              <div className="tlogs-hint">
+                带「供应商 ·」前缀的行来自本机会话日志（平台账单看不到这些模型，因此没有金额）
+              </div>
+              <StatTable rows={detail?.models ?? []} />
+            </div>
           ) : (
             <StatTable
               rows={
