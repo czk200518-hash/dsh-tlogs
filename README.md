@@ -6,15 +6,15 @@ tlogs 在 DSH 桌面端侧边栏页脚常驻显示 Token 用量，含紧凑条�
 
 | 形态 | 内容 |
 | --- | --- |
-| 紧凑条 | 总量、今日、请求数。`↻` 刷新，`▾` 展开；侧边栏收起时只留总量 |
+| 紧凑条 | 总量、今日、请求数。`↻` 刷新，`▾` 展开 |
 | 展开面板 | 总消耗、当前项目、今日、当周、当月、近 7 天、近 30 天 |
-| 详细数据弹窗 | 日历、图表、模型、供应商、年、月、当月按天。图表为手写 SVG |
+| 详细数据弹窗 | 日历、图表、模型、供应商、年、月、当月按天 |
 
 ## 数据来源
 
 | 来源 | 覆盖 | 时效 | 金额 |
 | --- | --- | --- | --- |
-| 平台账单 | 账号全部设备，仅 DeepSeek 官方通道 | 滞后 10~30 分钟 | 有 |
+| 平台账单 | 账号全部设备，仅官方通道 | 滞后 10~30 分钟 | 有 |
 | 本机会话日志 | 仅本机，含所有供应商 | 实时 | 无 |
 
 两路**逐日**合并：`max(平台, 本机官方通道) + 本机第三方供应商`。同一次调用会被两路各记一次，因此取大而不相加。
@@ -37,7 +37,7 @@ desktop profile 不能用 CLI 安装，改用 设置 → 插件 → 安装；其
 | 1 | 环境变量 `DEEPSEEK_PLATFORM_USER_TOKEN` |
 | 2 | 配置 `platformUserToken`（明文） |
 | 3 | DSH 凭据 `TLOGS_USER_TOKEN`（面板填写） |
-| 4 | 复用 DSH 已登录账号（零配置） |
+| 4 | 复用 DSH 已登录账号 |
 | 5 | 内置登录窗口（桌面端不可用） |
 
 前 3 项优先于自动来源；退出登录只清除第 3 项。
@@ -50,14 +50,14 @@ desktop profile 不能用 CLI 安装，改用 设置 → 插件 → 安装；其
 | --- | --- | --- |
 | `exposeUsageToModel` | `false` | 注册对话内查询工具 |
 | `useAccountSession` | `true` | 复用 DSH 账号凭据 |
-| `localUsage` / `localUsageScanDays` | `true` / `32` | 读取会话日志与回溯天数 |
+| `localUsage` / `localUsageScanDays` | `true` / `32` | 读会话日志与回溯天数 |
 | `enableProjectScope` | `true` | 当前项目卡片 |
 | `persistHistory` | `true` | 历史落盘 |
-| `autoRefreshSeconds` | `300` | 定时刷新间隔，0 为关闭 |
+| `autoRefreshSeconds` | `300` | 定时刷新间隔，0 关闭 |
 | `cacheTTL.total` / `.current` | `1800` / `300` | 缓存秒数 |
 | `startYear` / `startMonth` | `2024` / `4` | 历史起点 |
 | `requestIntervalMs` | `1000` | 月度请求间隔 |
-| `numberFormat` | `short` | `full` 千分位，`short` K·M·B |
+| `numberFormat` | `short` | `full` 千分位 / `short` K·M·B |
 | `compactMetrics` | `[total, today]` | 紧凑条指标 |
 | `cacheDir` | `''` | 空为 `<DSH_HOME>/tlogs` |
 
@@ -69,11 +69,11 @@ desktop profile 不能用 CLI 安装，改用 设置 → 插件 → 安装；其
 
 | 措施 | 说明 |
 | --- | --- |
-| 凭据 | 账号服务只暴露 `getPlatformSession()`，不调用 `rejectToken()`；会话凭据只在刷新期间持有，失效标记只存摘要；token 只接受可打印 ASCII，不回显 |
-| 网络 | 只与 `platform.deepseek.com` 通信，不读代理变量，3xx 直接失败；部署头白名单只放行 `x-` 前缀，丢弃 `Cookie`、`Origin`、`Referer`、`Host` |
-| 模型隔离 | `exposeUsageToModel` 默认 `false`；即便打开，工具出参里的项目 id 也是不可逆哈希，不含本机路径 |
-| 会话日志 | 只读 `<DSH_HOME>/sessions/**`，只取用量计数与 provider/model，落盘只存路径哈希 |
-| 发布闸门 | `npm run verify:secrets` 无命中才允许发布 |
+| 凭据 | 只暴露 `getPlatformSession()`；会话凭据仅刷新期间持有；失效标记只存摘要 |
+| 网络 | 只连 `platform.deepseek.com`；不跟重定向；部署头白名单只放行 `x-` |
+| 模型隔离 | 默认不注册工具；打开后项目 id 仍是不可逆哈希 |
+| 会话日志 | 只读、只取计数与 provider/model，落盘只存路径哈希 |
+| 发布闸门 | `npm run verify:secrets` |
 
 最小权限配置：
 
