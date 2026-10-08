@@ -14,7 +14,7 @@
 
 import * as React from 'react'
 import { h, Fragment } from './h.js'
-import { formatFull, formatMoneyFull, formatMoneyShort, formatNumber } from './format.js'
+import { formatFull, formatMoneyFull, formatMoneyShort, formatNumber, localReasonLabel } from './format.js'
 import { moneyTotal } from '../types.js'
 import { StatTable } from './detail-view.js'
 import { ChartPanel } from './chart-panel.js'
@@ -394,14 +394,19 @@ export function DetailModal(props: DetailModalProps): React.ReactElement {
                   所以它不是「有史以来」，而且它与上面那张平台「模型」表口径不同。 */}
               <div className="tlogs-hint">
                 {detail?.localRange
-                  ? `本机口径（DSH 会话日志）：${detail.localRange.from} ~ ${detail.localRange.to} · ` +
+                  ? `本机口径（DSH 会话日志${detail.localRange.sourceLabel ? ` · ${detail.localRange.sourceLabel}` : ''}）：` +
+                    `${detail.localRange.from} ~ ${detail.localRange.to} · ` +
                     `${detail.localRange.days} 天 · ${detail.localRange.files} 个会话日志`
-                  : '本机口径：无数据'}
+                  : `本机口径不可用（${localReasonLabel(detail?.localUnavailable?.reason)}）`}
                 {'；含平台账单看不到的供应商（火山方舟 / 小米 / GLM / GPT…）'}
               </div>
               <StatTable
                 rows={detail?.providers ?? []}
-                emptyText="本机口径暂无数据（会话日志未就绪或已关闭 localUsage）"
+                emptyText={
+                  detail?.localUnavailable
+                    ? `本机口径不可用：${localReasonLabel(detail.localUnavailable.reason)}`
+                    : '本机口径暂无数据'
+                }
               />
             </div>
           ) : (

@@ -245,6 +245,53 @@ test('日志目录不存在时优雅降级：available=false 且给出原因', a
   assert.deepEqual(r.days, [])
 })
 
+test('候选目录：取第一个能列出日志的（桌面端 DSH_HOME 指向 profile 的真实情形）', async () => {
+  const base = mkdtempSync(join(tmpdir(), 'tlogs-roots-'))
+  try {
+    // 桌面端：DSH_HOME = <主目录>/profiles/desktop，而会话日志在 <主目录>/sessions
+    const profileSessions = join(base, 'profiles', 'desktop', 'sessions')
+    const realSessions = join(base, 'sessions')
+    writeSession(
+      realSessions,
+      'ws',
+      's1',
+      jsonl([
+        session('s1', T0),
+        header('deepseek-account', 'deepseek-flash', T0),
+        message(1, 1, { inputTokens: 3, outputTokens: 2, cacheReadTokens: 30 }, T0 + 1000),
+      ]),
+    )
+    const store = new SessionUsageStore({
+      roots: [
+        { label: 'DSH_HOME/sessions', dir: profileSessions },
+        { label: 'DSH_HOME 上两级/sessions', dir: realSessions },
+        { label: '~/.dsh/sessions', dir: join(base, 'nope') },
+      ],
+    })
+    const r = await store.refresh()
+    assert.equal(r.available, true, '必须回退到候选目录里真正存在日志的那个')
+    assert.equal(r.sourceLabel, 'DSH_HOME 上两级/sessions')
+    assert.equal(store.sessionsRoot, realSessions)
+    assert.equal(r.days[0]!.date, '2026-10-08')
+  } finally {
+    rmSync(base, { recursive: true, force: true })
+  }
+})
+
+test('候选目录全都列不出日志：reason=no-session-logs，且不下发绝对路径', async () => {
+  const base = join(tmpdir(), `tlogs-none-${Date.now()}`)
+  const store = new SessionUsageStore({
+    roots: [
+      { label: 'DSH_HOME/sessions', dir: join(base, 'a') },
+      { label: '~/.dsh/sessions', dir: join(base, 'b') },
+    ],
+  })
+  const r = await store.refresh()
+  assert.equal(r.available, false)
+  assert.equal(r.reason, 'no-session-logs')
+  assert.equal(r.reason!.includes(base), false, '原因码里不得带候选目录的绝对路径')
+})
+
 test('坏行与打包行（text/reasoning/tool-call-chunks）直接跳过，不抛错', () => {
   assert.equal(parseRecordLine(''), null)
   assert.equal(parseRecordLine('{ not json'), null)

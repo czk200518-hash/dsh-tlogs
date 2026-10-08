@@ -300,18 +300,24 @@ test('apply 注入 <style> 并在销毁时移除（不残留 DOM）', () => {
   )
 
   /*
-   * 回归：**弹窗尺寸必须恒定**（用户明确要求「无论怎么样，弹窗的大小决不能变化」）。
+   * 回归：**弹窗尺寸永远锁定**（用户两次强调「无论切换到哪个标签，弹窗尺寸永远锁定」）。
    *
-   * 此前是 `max-height: 82vh` + body 的 `min-height`，高度于是变成内容的函数：
-   * 日历页签 6 行固定、图表页签堆三张图很高、表格页签行数不定，切页签时弹窗会伸缩。
-   * 现在宽高都写死，多出来的内容由 body 内部滚动消化。
+   * 历史：早先 max-height: 82vh + body min-height → 高度由内容决定、切页签伸缩，
+   * 于是改成宽高写死。写死之后日历页签下方空出一条，用户要求「那截不要」——
+   * 解法**不是**改回贴内容（那会推翻锁定），而是让日历自己长满锁定的高度
+   * （下面单独断言 .tlogs-cal 的 flex 与 minmax 行高）。
    */
   const modalCss = /\.tlogs-modal\s*\{([^}]*)\}/.exec(cssNoComments)?.[1] ?? ''
   assert.match(modalCss, /height:\s*min\(/, '弹窗高度必须写死（随视口收缩），不能由内容决定')
   assert.equal(
     /max-height/.test(modalCss),
     false,
-    '不得再用 max-height —— 那正是「切页签弹窗变大变小」的成因',
+    '不得用 max-height —— 高度一旦是内容的函数，切页签弹窗就会变大变小',
+  )
+  assert.equal(
+    /height:\s*auto/.test(modalCss),
+    false,
+    '不得用 height: auto 贴内容 —— 尺寸必须锁定',
   )
   const modalBodyCss = /\.tlogs-modal-body\s*\{([^}]*)\}/.exec(cssNoComments)?.[1] ?? ''
   assert.match(modalBodyCss, /flex:\s*1 1 auto/, 'body 必须吃掉剩余高度')
@@ -321,6 +327,27 @@ test('apply 注入 <style> 并在销毁时移除（不残留 DOM）', () => {
     /min-height:\s*min\(/.test(modalBodyCss),
     false,
     'body 不该再写 min-height: min(...)：那会让弹窗高度跟着内容走',
+  )
+  /*
+   * 关键的一条：锁定高度之后，**日历必须自己长满**这块高度。
+   * 否则「尺寸锁定」就会在日历页签下方变成一条空白 —— 那正是用户两次反馈的交集。
+   */
+  const calCss = /\.tlogs-cal\s*\{([^}]*)\}/.exec(cssNoComments)?.[1] ?? ''
+  assert.match(calCss, /flex:\s*1 1 auto/, '日历必须伸展以填满锁定的弹窗高度')
+  assert.match(
+    calCss,
+    /grid-template-rows:\s*auto\s+repeat\(6,\s*minmax\(\s*52px\s*,\s*1fr\s*\)\)/,
+    '星期标题行保持紧凑，6 行日期格用 minmax(52px, 1fr) 摊掉锁定的多余高度',
+  )
+  assert.match(
+    calCss,
+    /grid-auto-rows:\s*minmax\(\s*52px\s*,\s*1fr\s*\)/,
+    '隐式行兜底也必须是 minmax(52px, 1fr)',
+  )
+  assert.equal(
+    /grid-auto-rows:\s*52px/.test(calCss),
+    false,
+    '不能用固定 52px 行高 —— 那样锁定高度就会在日历下方留出一条空白',
   )
   // 图形舞台固定下界：三张图高度不同，切子标签也不该上下跳
   const stageCss = /\.tlogs-chart-stage\s*\{([^}]*)\}/.exec(cssNoComments)?.[1] ?? ''

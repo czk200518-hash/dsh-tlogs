@@ -116,6 +116,8 @@ export interface LocalUsageReport {
   parsedFiles: number
   /** 最近一次成功扫描的时间戳（ms）。 */
   updatedAt: number
+  /** 实际命中的候选目录标签（例如 `DSH_HOME 上两级/sessions`），供诊断展示。 */
+  sourceLabel?: string
 }
 
 /** 单文件里某个供应商的聚合（含按模型拆分）。 */
@@ -141,8 +143,18 @@ interface FileRecord {
 }
 
 export interface SessionUsageOptions {
-  /** 会话根目录，通常是 `$DSH_HOME/sessions`。 */
-  root: string
+  /** 单个会话根目录（测试/显式指定用；会被放在候选列表最前面）。 */
+  root?: string
+  /**
+   * 候选会话根目录（按优先级）。第一个**真的能列出日志**的会被选中。
+   *
+   * 为什么要候选：`DSH_HOME` 在 web/CLI 下是 DSH 主目录，在桌面端却是
+   * `<主目录>/profiles/<profile>`（会话日志仍在 `<主目录>/sessions`）。
+   * 只认 `<DSH_HOME>/sessions` 会让桌面端永远「本机口径无数据」（实测踩过：
+   * `~/.dsh/profiles/desktop/sessions` 不存在，`~/.dsh/sessions` 才有日志）。
+   * 由 `config.sessionDirCandidates()` 生成。
+   */
+  roots?: Array<{ label: string; dir: string }>
   logger?: { warn?: (m: string) => void; info?: (m: string) => void }
   /** 只保留最近多少天（默认 32）。 */
   maxDays?: number
@@ -484,7 +496,8 @@ export async function listSessionLogs(root: string): Promise<Array<{ path: strin
  * （它们不可能含窗口内的样本）。
  */
 export class SessionUsageStore {
-  private readonly root: string
+  private readonly roots: Array<{ label: string; dir: string }>
+  private activeRoot: { label: string; dir: string } | undefined
   private readonly logger?: SessionUsageOptions['logger']
   private readonly maxDays: number
   private readonly budget: number
@@ -501,7 +514,15 @@ export class SessionUsageStore {
   }
 
   constructor(opts: SessionUsageOptions) {
-    this.root = opts.root
+    /** 候选列表：显式 `root` 优先，然后是 `roots`（去重）。 */
+    const roots: Array<{ label: string; dir: string }> = []
+    if (opts.root && opts.root.trim().length > 0) roots.push({ label: 'root', dir: opts.root })
+    for (const r of opts.roots ?? []) {
+      if (!r || typeof r.dir !== 'string' || r.dir.length === 0) continue
+      if (roots.some((x) => x.dir === r.dir)) continue
+      roots.push({ label: r.label, dir: r.dir })
+    }
+    this.roots = roots
     this.logger = opts.logger
     this.maxDays = Math.max(2, Math.trunc(opts.maxDays ?? DEFAULT_MAX_DAYS))
     this.budget = opts.maxDecompressBytesPerFile ?? DEFAULT_MAX_DECOMPRESSED_PER_FILE
@@ -518,9 +539,9 @@ export class SessionUsageStore {
     return this.report.available
   }
 
-  /** 会话根目录。 */
+  /** 实际使用的会话根目录（尚未探测出结果时返回第一个候选）。 */
   get sessionsRoot(): string {
-    return this.root
+    return this.activeRoot?.dir ?? this.roots[0]?.dir ?? ''
   }
 
   /** 增量刷新。并发调用共享同一次扫描。 */
@@ -532,12 +553,51 @@ export class SessionUsageStore {
     return this.inflight
   }
 
+  /**
+   * 选定会话根目录：从候选列表里取**第一个真的能列出日志**的目录。
+   *
+   * 已经选定过就直接用（避免每次刷新都去 stat 一圈候选目录）。
+   */
+  private async pickRoot(): Promise<{ root: { label: string; dir: string }; listed: Awaited<ReturnType<typeof listSessionLogs>> } | { tried: string[] }> {
+    const tried: string[] = []
+    const order = this.activeRoot
+      ? [this.activeRoot, ...this.roots.filter((r) => r.dir !== this.activeRoot!.dir)]
+      : this.roots
+    for (const cand of order) {
+      tried.push(`${cand.label}=${cand.dir}`)
+      const listed = await listSessionLogs(cand.dir)
+      if (listed.length > 0) return { root: cand, listed }
+    }
+    return { tried }
+  }
+
   private async scan(): Promise<LocalUsageReport> {
     const started = this.now()
     const cutoff = started - (this.maxDays + 1) * 86_400_000
-    let listed: Array<{ path: string; size: number; mtimeMs: number }>
+    let listed: Awaited<ReturnType<typeof listSessionLogs>>
     try {
-      listed = await listSessionLogs(this.root)
+      const picked = await this.pickRoot()
+      if ('tried' in picked) {
+        this.report = {
+          ...this.report,
+          available: false,
+          // 对外只给稳定的原因码；**候选目录的绝对路径只进日志**，不下发浏览器。
+          reason: 'no-session-logs',
+          days: [],
+          totalFiles: 0,
+          parsedFiles: 0,
+          updatedAt: started,
+        }
+        this.logger?.warn?.(
+          `tlogs: 本机口径找不到会话日志，已尝试 ${picked.tried.length} 个候选目录 —— ${picked.tried.join(' , ')}`,
+        )
+        return this.report
+      }
+      if (this.activeRoot?.dir !== picked.root.dir) {
+        this.activeRoot = picked.root
+        this.logger?.info?.(`tlogs: 本机口径使用会话目录（${picked.root.label}）：${picked.root.dir}`)
+      }
+      listed = picked.listed
     } catch (e) {
       this.report = {
         ...this.report,
@@ -610,6 +670,7 @@ export class SessionUsageStore {
       totalFiles: candidates.length,
       parsedFiles,
       updatedAt: started,
+      ...(this.activeRoot ? { sourceLabel: this.activeRoot.label } : {}),
     }
     if (parsedFiles > 0) {
       this.logger?.info?.(

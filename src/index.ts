@@ -20,7 +20,7 @@
  */
 
 import z from 'schemastery'
-import { defaultSessionsDir, resolveConfig, type ResolvedConfig, type TlogsConfig } from './config.js'
+import { resolveConfig, sessionDirCandidates, type ResolvedConfig, type TlogsConfig } from './config.js'
 import { HistoryStore } from './store/history.js'
 import { ProjectHistoryStore } from './store/project-history.js'
 import { SessionUsageStore } from './store/session-usage.js'
@@ -303,7 +303,9 @@ export function apply(ctx: TlogsHostContext, rawConfig?: TlogsConfig): void {
    */
   const localUsage = resolved.localUsage
     ? new SessionUsageStore({
-        root: defaultSessionsDir(),
+        // 候选目录：web/CLI 是 `<DSH_HOME>/sessions`，桌面端 DSH_HOME 指向
+        // `<主目录>/profiles/<profile>`，会话日志其实在 `<主目录>/sessions`。
+        roots: sessionDirCandidates(),
         logger,
         maxDays: resolved.localUsageScanDays,
       })

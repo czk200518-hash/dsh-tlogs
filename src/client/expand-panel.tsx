@@ -8,7 +8,7 @@
 
 import * as React from 'react'
 import { h, Fragment } from './h.js'
-import { formatFull, formatMoney, formatMoneyFull, formatNumber } from './format.js'
+import { formatFull, formatMoney, formatMoneyFull, formatNumber, localReasonLabel } from './format.js'
 import { moneyTotal } from '../types.js'
 import type { AuthState, CardData, CardSourceInfo, UsageSnapshot } from '../types.js'
 
@@ -230,22 +230,9 @@ function sourceTip(s: CardSourceInfo): string {
   return lines.join('\n')
 }
 
-/** 本机口径不可用的原因（英文枚举）转成一句人话。 */
+/** 本机口径不可用的原因（英文枚举）转成一句人话；与详细数据「供应商」页签共用。 */
 function reasonLabel(reason: string | undefined): string {
-  switch (reason) {
-    case 'no-session-logs':
-      return '未找到会话日志'
-    case 'zstd-unavailable':
-      return '当前运行时不支持 zstd（需要 Node 22.15+ / 24）'
-    case 'not-scanned':
-      return '尚未扫描'
-    case 'restored-empty':
-      return '缓存里没有可用数据'
-    default:
-      return reason && reason.startsWith('sessions-dir-unreadable')
-        ? '会话目录不可读'
-        : '读取失败'
-  }
+  return localReasonLabel(reason)
 }
 
 export function ExpandPanel(props: ExpandPanelProps): React.ReactElement {

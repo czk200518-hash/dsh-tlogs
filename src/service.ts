@@ -1045,6 +1045,9 @@ export class UsageService {
               days: this.opts.localUsage?.current.days.length ?? 0,
               files: this.opts.localUsage?.current.totalFiles ?? 0,
               updatedAt: this.opts.localUsage?.current.updatedAt ?? 0,
+              ...(this.opts.localUsage?.current.sourceLabel
+                ? { sourceLabel: this.opts.localUsage.current.sourceLabel }
+                : {}),
             },
           }
         : {}),
@@ -1107,9 +1110,12 @@ export class UsageService {
    * **本机在 DSH 里用过的每一家供应商的每一个模型用了多少**，包括平台完全看不到的
    * 火山方舟 / 小米 / GLM / GPT。数据来自会话日志，因此只覆盖日志还在的那些天。
    */
-  private localDetail(): Pick<DetailData, 'providers' | 'localRange'> {
+  private localDetail(): Pick<DetailData, 'providers' | 'localRange' | 'localUnavailable'> {
     const local = this.opts.localUsage?.current
-    if (!this.config.localUsage || !local || local.days.length === 0) return {}
+    if (!this.config.localUsage) return { localUnavailable: { reason: 'disabled' } }
+    if (!local || local.days.length === 0) {
+      return { localUnavailable: { reason: local?.reason ?? 'no-session-logs' } }
+    }
 
     /** key 用 `provider · model`，provider 层缺失模型时退化为只用 provider。 */
     const acc = new Map<string, Stat>()
@@ -1140,6 +1146,7 @@ export class UsageService {
         to: local.days[local.days.length - 1]!.date,
         days: local.days.length,
         files: local.totalFiles,
+        ...(local.sourceLabel ? { sourceLabel: local.sourceLabel } : {}),
       },
     }
   }

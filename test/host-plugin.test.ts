@@ -21,7 +21,7 @@ import { join } from 'node:path'
 import { apply, Config, inject as hostInject } from '../lib/index.js'
 import { TLOGS_CHANNEL } from '../lib/types.js'
 import { buildHeaders, buildUrl } from '../lib/api/usage-client.js'
-import { resolveConfig } from '../lib/config.js'
+import { resolveConfig, sessionDirCandidates } from '../lib/config.js'
 import { canInteractiveLogin } from '../lib/auth/desktop-login.js'
 import { MAX_TOKEN_INPUT } from '../lib/rpc.js'
 
@@ -657,6 +657,26 @@ test('resolveConfig 对越界输入做夹取而非崩溃', () => {
   assert.equal(c.maxToolRows, 200)
   assert.equal(c.numberFormat, 'short')
   assert.deepEqual(c.compactMetrics, ['total'])
+})
+
+test('会话目录候选：桌面端 DSH_HOME 指向 profile 时也能找到 <主目录>/sessions', () => {
+  // 实测踩过：桌面端（Electron）把 DSH_HOME 指到 <主目录>/profiles/<profile>，
+  // 会话日志却仍在 <主目录>/sessions —— 只认 <DSH_HOME>/sessions 会让「本机口径」
+  // 永远拿不到数据（界面表现为「供应商」页签空白）。
+  const env = (n: string): string | undefined =>
+    n === 'DSH_HOME' ? 'C:\\Users\\x\\.dsh\\profiles\\desktop' : undefined
+  const cands = sessionDirCandidates(env, 'C:\\Users\\x')
+  const dirs = cands.map((c) => c.dir.toLowerCase())
+  const homeSessions = 'c:\\users\\x\\.dsh\\profiles\\desktop\\sessions'
+  const desktopReal = 'c:\\users\\x\\.dsh\\sessions'
+
+  assert.ok(dirs.includes(homeSessions), '第一候选仍是 <DSH_HOME>/sessions')
+  assert.ok(dirs.includes(desktopReal), '必须包含桌面端的真实位置（DSH_HOME 上两级/sessions）')
+  assert.ok(
+    dirs.indexOf(homeSessions) < dirs.indexOf(desktopReal),
+    '<DSH_HOME>/sessions 优先，桌面端位置作为回退',
+  )
+  assert.equal(new Set(dirs).size, dirs.length, '候选目录不得重复（<主目录>/sessions 与兜底同路径）')
 })
 
 test('双路数据源端到端：没有平台凭据时，今日卡片仍由本机会话日志给出', async () => {

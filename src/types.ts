@@ -191,7 +191,14 @@ export interface DetailData {
    */
   providers?: StatRow[]
   /** 本机口径覆盖的日期区间与天数（用于在表头标注「这份数据只覆盖这段时间」）。 */
-  localRange?: { from: string; to: string; days: number; files: number }
+  localRange?: { from: string; to: string; days: number; files: number; sourceLabel?: string }
+  /**
+   * 本机口径**不可用**时的原因（此时 `providers` 为空）。
+   *
+   * 「供应商」页签空白时必须说出为什么：是没找到会话日志、还是 zstd 不支持、
+   * 还是用户自己关了 `localUsage` —— 否则只能看到一个空表格。
+   */
+  localUnavailable?: { reason?: string }
 }
 
 /**
@@ -547,6 +554,13 @@ export interface UsageSnapshot {
     files: number
     /** 最近一次扫描时间（ms）。 */
     updatedAt: number
+    /**
+     * 实际命中的候选目录标签（例如 `DSH_HOME 上两级/sessions`）。
+     *
+     * 用它而不是绝对路径：桌面端 `DSH_HOME` 指向 profile 目录、web/CLI 指向主目录，
+     * 出问题时需要能一眼看出「插件到底读了哪儿」，但没必要把用户主目录下发给浏览器。
+     */
+    sourceLabel?: string
   }
   /** 是否仍在后台拉取全量历史。 */
   loading: boolean

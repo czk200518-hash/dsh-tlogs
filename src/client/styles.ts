@@ -458,11 +458,20 @@ export const CSS = `
 
 .tlogs-table { width: 100%; border-collapse: collapse; font-size: 10px; }
 .tlogs-table th, .tlogs-table td { padding: 3px 4px; text-align: right; white-space: nowrap; }
+/*
+ * 名称列：**不截断**。
+ *
+ * 原来是 max-width: 9em + ellipsis，实测把模型名切成了
+ * deepseek-v4.1-flash-expires-on-0… / deepseek-chat & deepseek-reaso…，
+ * 用户直接反馈「名字显示不全」。这里改成允许换行（overflow-wrap: anywhere 处理
+ * 「provider · model」这种长串），并给它一个下限，让数字列先让位。
+ */
 .tlogs-table th:first-child, .tlogs-table td:first-child {
   text-align: left;
-  max-width: 9em;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  min-width: 12em;
+  max-width: 26em;
 }
 .tlogs-table thead th {
   position: sticky;
@@ -505,18 +514,24 @@ export const CSS = `
   background: color-mix(in srgb, #000 45%, transparent);
 }
 /*
- * 弹窗尺寸**恒定**：宽高都写死（仅随视口收缩），内容多少一律靠 body 内部滚动消化。
+ * 弹窗尺寸**永远锁定**：宽高都写死（仅随视口收缩），切任何页签都不变。
  *
- * 为什么不能再靠 min-height / max-height：那样高度是「内容的函数」——
- * 日历页签 6 行固定、图表页签三张图叠起来很高、表格页签行数不定，切页签时
- * 弹窗会跟着变高变矮（用户实测反馈）。固定高度之后，无论切主页签、切图形子标签，
- * 还是切换范围/项目/指标让内容变多，弹窗外框永远是同一个矩形。
+ * 历史（两次反馈的结论）：
+ *  1. 早先是 max-height: 82vh 加 body 的 min-height，高度由内容决定 → 切页签伸缩。
+ *     用户明确要求「无论切换到哪个标签，弹窗尺寸永远锁定」，于是写死宽高。
+ *  2. 写死之后日历页签（默认页签、内容最短）下方空出一条（用户标注「红线下方那截不要」）。
+ *     **但解法不是把弹窗改成贴内容** —— 那会推翻 1。正确解法是让**内容去长满**这块
+ *     高度：日历网格的行高改成 minmax(52px, 1fr) 并 flex 伸展（见下），
+ *     表格/图表这类超长内容在 body 内滚动。
+ *
+ * 一句话：弹窗外框恒定，缺的高度由日历自己填满。
  */
 .tlogs-modal {
   display: flex;
   flex-direction: column;
-  width: min(760px, 94vw);
-  height: min(720px, 84vh);
+  width: min(880px, 94vw);
+  /* 锁定尺寸；上限随视口收缩（短视口下也不会顶出屏幕）。 */
+  height: min(640px, 78vh);
   overflow: hidden;
   border: 1px solid var(--tlogs-border-strong);
   border-radius: 8px;
@@ -566,17 +581,29 @@ export const CSS = `
 .tlogs-cal-summary-title { color: var(--tlogs-muted); font-weight: 600; }
 .tlogs-cal-detail { min-height: 30px; }
 /*
- * 行高固定 52px：配合「始终渲染 42 格」，切月时网格高度完全不变。
+ * 行高下限 52px，上限不限（1fr）：弹窗高度是**锁定**的，日历必须自己长满
+ * 这块高度，否则锁定高度就会在日历下方变成一条空白 —— 这是「尺寸永远锁定」
+ * 与「日历下方不留空白」两条要求的唯一交点。
  *
- * 52 而不是 40，是因为每格现在是三行（日号 / token / 金额）。金额那一行**无条件**
- * 占位（无数据时渲染空串），所以有金额与没金额的月份格子高度仍完全相同 ——
+ * 行高下限仍然 52 而不是 40：每格现在是三行（日号 / token / 金额）。金额那一行
+ * **无条件**占位（无数据时渲染空串），所以有金额与没金额的格子高度仍完全相同 ——
  * 一旦按需渲染，切月时高度又会跳，那正是「固定 42 格」要解决的问题。
  */
 .tlogs-cal {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
-  grid-auto-rows: 52px;
+  /*
+   * 第一行是星期标题（保持紧凑，不参与分摊），其余 6 行是日期格：
+   * 用 minmax(52px, 1fr) 把「锁定高度多出来的部分」按比例摊给它们。
+   * 日历**始终渲染 42 格**（见 detail-modal.tsx），所以正好 1 + 6 行。
+   */
+  grid-template-rows: auto repeat(6, minmax(52px, 1fr));
+  /* 兜底：万一将来某个月不是 6 行，隐式行也要同样的下限语义。 */
+  grid-auto-rows: minmax(52px, 1fr);
   gap: 3px;
+  /* body 是 flex 列：让网格吃掉剩余高度，否则锁定高度会变成日历下方的空白条。 */
+  flex: 1 1 auto;
+  min-height: 0;
 }
 .tlogs-cal-head { text-align: center; font-size: 10px; color: var(--tlogs-muted); padding: 2px 0; }
 .tlogs-cal-cell {

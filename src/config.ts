@@ -6,6 +6,9 @@
  * 越界值或错类型，插件必须能带着合理默认值继续工作。
  */
 
+import { homedir } from 'node:os'
+import { join, resolve } from 'node:path'
+
 import { CACHE_TTL } from './store/cache.js'
 import { COMPACT_METRICS, type CompactMetric } from './types.js'
 
@@ -142,6 +145,54 @@ export function dshHome(env: (n: string) => string | undefined = (n) => process.
  */
 export function defaultSessionsDir(env: (n: string) => string | undefined = (n) => process.env[n]): string {
   return `${dshHome(env).replace(/[\\/]+$/, '')}/sessions`
+}
+
+/** 候选会话根目录（带可读标签，便于在日志/界面里说明「用的是哪一个」）。 */
+export interface SessionsDirCandidate {
+  label: string
+  dir: string
+}
+
+/**
+ * 列出**所有可能**的会话日志根目录，按优先级排序。
+ *
+ * 为什么需要候选列表（实测踩过）：`DSH_HOME` 在不同宿主里含义不同 ——
+ *  - web / CLI：`DSH_HOME` 就是 DSH 主目录，会话在 `<DSH_HOME>/sessions`；
+ *  - **桌面端（Electron）**：`DSH_HOME` 被指到 `<主目录>/profiles/<profile>`，
+ *    而会话日志仍在 `<主目录>/sessions`（实测：`~/.dsh/profiles/desktop/sessions`
+ *    不存在，`~/.dsh/sessions` 才有 121 个日志）。
+ *
+ * 于是只认 `<DSH_HOME>/sessions` 会让桌面端「本机口径」永远拿不到数据。
+ * 这里给出候选列表，由 `SessionUsageStore` 取第一个真的能列出日志的目录。
+ */
+export function sessionDirCandidates(
+  env: (n: string) => string | undefined = (n) => process.env[n],
+  home: string = homedir(),
+): SessionsDirCandidate[] {
+  const out: SessionsDirCandidate[] = []
+  const push = (label: string, dir: string | undefined): void => {
+    if (!dir || dir.trim().length === 0) return
+    const abs = resolve(dir.trim())
+    if (out.some((c) => c.dir === abs)) return
+    out.push({ label, dir: abs })
+  }
+
+  // 1) 显式覆盖优先。
+  push('TLOGS_SESSIONS_DIR', env('TLOGS_SESSIONS_DIR'))
+
+  const dshHome = env('DSH_HOME')
+  if (dshHome && dshHome.trim().length > 0) {
+    const root = dshHome.trim()
+    // 2) web / CLI 形态。
+    push('DSH_HOME/sessions', join(root, 'sessions'))
+    // 3) 桌面端形态：DSH_HOME = <主目录>/profiles/<profile>。
+    push('DSH_HOME 上两级/sessions', resolve(root, '..', '..', 'sessions'))
+    push('DSH_HOME 上一级/sessions', resolve(root, '..', 'sessions'))
+  }
+
+  // 4) 兜底：DSH 主目录的默认位置。
+  push('~/.dsh/sessions', join(home, '.dsh', 'sessions'))
+  return out
 }
 
 /**

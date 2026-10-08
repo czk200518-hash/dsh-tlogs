@@ -4,6 +4,35 @@
  * 纯函数，无 DOM/React 依赖，便于单测。
  */
 
+/**
+ * 本机口径不可用的原因（英文枚举，来自 host 侧 `SessionUsageStore`）转成一句人话。
+ *
+ * 放在这里而不是某个组件里：展开面板与详细数据的「供应商」页签都要用，
+ * 两处文案必须一致（同一个原因在两处显示不同的说法只会让人更困惑）。
+ */
+export function localReasonLabel(reason: string | undefined): string {
+  switch (reason) {
+    case undefined:
+      return '尚未扫描'
+    case 'disabled':
+      return '配置里已关闭 localUsage'
+    case 'no-session-logs':
+      return '未找到会话日志（候选目录都不存在）'
+    case 'zstd-unavailable':
+      return '当前运行时不支持 zstd（需要 Node 22.15+ / 24）'
+    case 'not-scanned':
+      return '尚未扫描'
+    case 'restored-empty':
+      return '缓存里没有可用数据'
+    case 'no-usage-in-window':
+      return '日志里没有窗口内的用量'
+    case 'session-log-read-failed':
+      return '会话日志读取失败'
+    default:
+      return reason.startsWith('sessions-dir-unreadable') ? '会话目录不可读' : '读取失败'
+  }
+}
+
 /** 千分位精确格式：`1234567` → `1,234,567`。 */
 export function formatFull(n: number): string {
   if (!Number.isFinite(n)) return '0'
