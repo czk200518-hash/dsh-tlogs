@@ -1294,7 +1294,16 @@ test('设置页签：三种语言模式，切换即时生效并持久化', async
     // 默认「跟随系统」，而 <html lang="zh"> → 生效语言是中文
     const autoRadio = doc().querySelector('.tlogs-settings-radio[value="auto"]') as HTMLInputElement
     assert.equal(autoRadio.checked, true, '默认应是「跟随系统」')
-    assert.match(text, /当前生效：中文/, '跟随系统时应解析成中文')
+    /*
+     * 设置页**只留标题 + 三个选项**（用户明确要求删掉说明性文字）。
+     * 这几条断言防的是「又把解释文案加回界面」——解析顺序、存储位置属于实现细节，
+     * 写在 README 与 CHANGELOG 里就够了。
+     */
+    assert.equal(
+      /当前生效|选择保存在本机浏览器|依次判断/.test(text),
+      false,
+      '设置页不该再出现说明性文字',
+    )
 
     // 未做任何选择前不应写存储（默认值不落盘）
     assert.equal(dom.window.localStorage.getItem('tlogs.lang'), null, '默认值不该写进存储')
@@ -1312,7 +1321,11 @@ test('设置页签：三种语言模式，切换即时生效并持久化', async
       'en',
       '语言选择必须持久化，插件重启后保持',
     )
-    assert.match(dialogText(), /Active now: English/, '英文界面下「当前生效」也应是英文')
+    assert.equal(
+      /Active now|Stored in this browser|Follow system” resolves/.test(dialogText()),
+      false,
+      '英文界面下同样不该出现说明性文字',
+    )
     assert.equal(
       rpcCalls.length,
       callsBefore,
@@ -1365,7 +1378,8 @@ test('「跟随系统」在每次重渲染时读取宿主语言（<html lang>）
   const { root, container, tabLabels, pickTab, dialogText } = await openSettingsTab()
   try {
     await pickTab('设置')
-    assert.match(dialogText(), /当前生效：中文/)
+    // 设置页只有标题 + 三个选项：用标题存在来确认页签确实渲染出来了
+    assert.match(dialogText(), /语言/)
 
     /*
      * 宿主把界面切成英文（DSH 的 locale 服务会写 <html lang>）。
@@ -1417,7 +1431,7 @@ test('显式选择优先于宿主语言，且重启后（重新物化）保持�
     await pickTab('Settings')
     const radio = doc().querySelector('.tlogs-settings-radio[value="en"]') as HTMLInputElement
     assert.equal(radio.checked, true, '重启后设置页应回显上次选择')
-    assert.match(dialogText(), /Active now: English/)
+    assert.match(dialogText(), /Language/, '界面语言确实持久化成英文')
   } finally {
     await act(async () => {
       root.unmount()

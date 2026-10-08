@@ -68,14 +68,9 @@ export const enApp = {
   'providers.coverage': '; includes providers platform billing cannot see (Volcano Ark / Xiaomi / GLM / GPT…)',
   'providers.modelsNote': 'Rows prefixed with “provider ·” come from local session logs (platform billing cannot see those models, so they carry no cost)',
 
-  // ---- Settings tab: language ----
+  // ---- Settings tab: language (title + three options only) ----
   'settings.title': 'Language',
-  'settings.desc': 'Language of this plugin’s UI. “Follow system” resolves DSH UI language → browser language → Chinese.',
   'settings.option.auto': 'Follow system',
   'settings.option.zh': '中文',
   'settings.option.en': 'English',
-  'settings.active': 'Active now: {lang}',
-  'settings.lang.zh': '中文',
-  'settings.lang.en': 'English',
-  'settings.storage': 'Stored in this browser only; it survives plugin restarts.',
 }

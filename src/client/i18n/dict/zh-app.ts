@@ -65,14 +65,9 @@ export const zhApp = {
   'providers.coverage': '；含平台账单看不到的供应商（火山方舟 / 小米 / GLM / GPT…）',
   'providers.modelsNote': '带「供应商 ·」前缀的行来自本机会话日志（平台账单看不到这些模型，因此没有金额）',
 
-  // ---- 设置页签：语言 ----
+  // ---- 设置页签：语言（界面只有标题 + 三个选项，解析顺序等细节写在 README） ----
   'settings.title': '语言',
-  'settings.desc': '插件界面文案语言。跟随系统时按 DSH 界面语言 → 浏览器语言 → 中文 依次判断。',
   'settings.option.auto': '跟随系统',
   'settings.option.zh': '中文',
   'settings.option.en': 'English',
-  'settings.active': '当前生效：{lang}',
-  'settings.lang.zh': '中文',
-  'settings.lang.en': 'English',
-  'settings.storage': '选择保存在本机浏览器，插件重启后仍然有效。',
 }

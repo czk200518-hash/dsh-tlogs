@@ -31,7 +31,7 @@ import {
 const keysOf = (o: object): string[] => Object.keys(o).sort()
 
 /** 语言自称这类值本来就该是中文，做「英文里不许有中文」检查时要放行。 */
-const LANGUAGE_SELF_NAME_KEYS = new Set(['settings.option.zh', 'settings.lang.zh'])
+const LANGUAGE_SELF_NAME_KEYS = new Set(['settings.option.zh'])
 const CJK = /[\u3400-\u4dbf\u4e00-\u9fff]/
 
 test('中英词典键完全一致（两个方向都查）', () => {

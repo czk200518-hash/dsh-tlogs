@@ -5,8 +5,9 @@
  * 管的是**整个 GUI** 的语言；本插件只需要管自己那几块 UI。放在插件自己的弹窗里，
  * 切换只影响本插件，不会动宿主的界面语言。
  *
- * 「跟随系统」解析顺序见 src/client/i18n/index.ts（`<html lang>` → 浏览器语言 → 中文）。
- * 偏好存 localStorage，插件重启后保持上次选择。
+ * 页面上只有**标题 + 三个选项**：解析顺序、持久化位置这些属于实现细节，写在
+ * README 与 CHANGELOG 里，不占界面（用户明确要求删掉面板里的说明性文字）。
+ * 「跟随系统」的解析顺序见 src/client/i18n/index.ts。
  */
 
 import * as React from 'react'
@@ -20,17 +21,13 @@ const OPTION_KEY: Record<LangPref, MessageKey> = {
   en: 'settings.option.en',
 }
 
-/** 生效语言的显示名，用各自语言自称（中文就写「中文」，英文就写 English）。 */
-const LANG_NAME_KEY = { zh: 'settings.lang.zh', en: 'settings.lang.en' } as const
-
 export function SettingsPanel(): React.ReactElement {
-  const { pref, lang, setPref } = useLangState()
+  const { pref, setPref } = useLangState()
   const t = useT()
 
   return (
     <div className="tlogs-settings">
       <div className="tlogs-settings-title">{t('settings.title')}</div>
-      <div className="tlogs-hint tlogs-settings-desc">{t('settings.desc')}</div>
 
       <div className="tlogs-settings-options" role="radiogroup" aria-label={t('settings.title')}>
         {LANG_PREFS.map((id) => (
@@ -50,11 +47,6 @@ export function SettingsPanel(): React.ReactElement {
           </label>
         ))}
       </div>
-
-      <div className="tlogs-hint">
-        {t('settings.active', { lang: t(LANG_NAME_KEY[lang]) })}
-      </div>
-      <div className="tlogs-hint">{t('settings.storage')}</div>
     </div>
   )
 }

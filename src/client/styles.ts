@@ -808,11 +808,10 @@ export const CSS = `
 /* ---------- 设置页签（语言） ---------- */
 /*
  * 定宽内容块：弹窗很宽，语言选项铺满整行会显得空。
- * 三个选项做成一行 "radio + 文字" 的小卡片，选中态用强调色描边。
+ * 页面上只有标题 + 三个选项（说明性文字按用户要求删掉了），选中态用强调色描边。
  */
 .tlogs-settings { display: flex; flex-direction: column; gap: 10px; max-width: 520px; }
 .tlogs-settings-title { font-size: 13px; font-weight: 600; }
-.tlogs-settings-desc { max-width: 100%; }
 .tlogs-settings-options { display: flex; flex-wrap: wrap; gap: 8px; }
 .tlogs-settings-option {
   display: flex;
