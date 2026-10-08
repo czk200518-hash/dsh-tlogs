@@ -2,9 +2,17 @@
 
 tlogs 在 DSH 桌面端侧边栏页脚常驻显示 Token 用量，含紧凑条、展开面板与详细数据弹窗。
 
-![侧边栏：紧凑条与展开面板](docs/images/sidebar.png)
+紧凑条常驻页脚：
+
+<img src="docs/images/in-dsh-compact.png" alt="在 DSH 窗口中的紧凑条" width="100%">
+
+展开后是七张卡片：
+
+<img src="docs/images/in-dsh-panel.png" alt="在 DSH 窗口中的展开面板" width="100%">
 
 ## 形态
+
+![紧凑条与展开面板](docs/images/sidebar.png)
 
 | 形态 | 内容 |
 | --- | --- |
