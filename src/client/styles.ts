@@ -178,6 +178,9 @@ export const CSS = `
   white-space: nowrap;
 }
 .tlogs-src-pending { color: var(--tlogs-warn); border-color: var(--tlogs-warn); }
+/* 注：曾有一条「¥结算中」徽标（.tlogs-src-pending）。平台当天结算滞后是**常态**
+   （约 10~30 分钟），那个徽标几乎永久常亮，只剩噪声 —— 已从卡面移除，
+   结算滞后只在卡片的 tooltip 里说明。这条样式保留给将来真正的告警态复用。 */
 /* 表格里行内使用的「官方 / 第三方」徽标：跟在名称前面，去掉左侧外边距。 */
 .tlogs-src-inline { margin: 0 4px 0 0; vertical-align: middle; display: inline-block; }
 /* 注：原先这里还有一条 .tlogs-sep（指标之间的「·」分隔符）。指标行现在允许
@@ -315,8 +318,12 @@ export const CSS = `
   justify-content: space-between;
   gap: 6px;
   min-width: 0;
+  /* 允许换行：徽标宁可另起一行，也不要把标题压成「今…」「当…」（实测踩过）。 */
+  flex-wrap: wrap;
 }
 .tlogs-card-title {
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 10px;
   line-height: 1.25;
   color: var(--tlogs-muted);

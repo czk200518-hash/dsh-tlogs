@@ -132,22 +132,14 @@ function Card(props: {
       title={clickable ? '点击切换项目' : undefined}
     >
       <div className="tlogs-card-head">
-        <span className="tlogs-card-title">
+        {/* 口径细节走 tooltip：两路合并是常态，卡面只在「含平台看不到的第三方用量」时标一下。 */}
+        <span className="tlogs-card-title" title={card.source ? sourceTip(card.source) : undefined}>
           {card.label}
           {current && (card.options?.length ?? 0) > 1 ? ` · ${current.label}` : ''}
         </span>
-        {/* 口径徽标：只在数字不是纯平台口径时出现（平台口径是默认、无需标注）。 */}
-        {card.source && card.source.kind !== 'platform' ? (
+        {card.source && card.source.otherProviders.length > 0 ? (
           <span className="tlogs-src" title={sourceTip(card.source)}>
-            {card.source.kind === 'local' ? '本机' : '合并'}
-          </span>
-        ) : null}
-        {card.source?.costPending ? (
-          <span
-            className="tlogs-src tlogs-src-pending"
-            title="金额是平台账单口径；该窗口平台尚未结算完，金额会偏小（token 数已用本机口径）"
-          >
-            ¥结算中
+            第三方
           </span>
         ) : null}
         {card.stale ? <span className="tlogs-stale">⚠</span> : null}
@@ -200,17 +192,18 @@ function outputCost(stat: CardData['stat']): number {
 }
 
 /**
- * 卡片右上角口径徽标的 tooltip。
+ * 卡片口径信息的 tooltip（挂在卡片标题上）。
  *
- * 双路数据源下「这个数字是谁给的」必须能一眼追查：平台口径只覆盖 DeepSeek
- * 官方通道且当天要等结算，本机口径（会话日志）实时、含所有供应商但不含别的设备。
+ * 为什么不常挂徽标：现在**大多数窗口都是两路合并**的结果（当天平台结算滞后、加上
+ * 平台账单看不到的第三方供应商），常年挂徽标只会挤掉标题、制造噪声。卡面只在
+ * 「这个窗口含平台账单看不到的第三方用量」时标一下，其余细节放这里。
  */
 function sourceTip(s: CardSourceInfo): string {
   const head =
     s.kind === 'local'
       ? '本机口径（DSH 会话日志）：实时，覆盖本机所有供应商'
       : s.kind === 'merged'
-        ? '平台 + 本机合并口径'
+        ? '平台账单 + 本机口径合并'
         : '平台账单口径'
   const lines = [
     head,
@@ -226,7 +219,7 @@ function sourceTip(s: CardSourceInfo): string {
           .join('、'),
     )
   }
-  if (s.costPending) lines.push('金额仍是平台账单：该窗口平台尚未结算完，会偏小')
+  if (s.costPending) lines.push('金额是平台计价，当天结算滞后约 10~30 分钟，会略偏小')
   return lines.join('\n')
 }
 
