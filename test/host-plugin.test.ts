@@ -14,6 +14,9 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import { apply, Config, inject as hostInject } from '../lib/index.js'
 import { TLOGS_CHANNEL } from '../lib/types.js'
@@ -137,10 +140,12 @@ test('Config 是 schemastery schema，默认值与 resolveConfig 一致', () => 
   assert.deepEqual(withDefaults.cacheTTL, { total: 1800, current: 300 })
   assert.equal(withDefaults.numberFormat, 'short')
   assert.equal(withDefaults.defaultExpanded, false)
-  // 紧凑条默认只放「总计 + 今日」：四项并排会把这一行挤爆（实测末尾被裁）
+  // 紧凑条默认只放「总计 + 今日」：金额不进小窗，四个指标会把标签挤成碎片（实测）。
   assert.deepEqual(withDefaults.compactMetrics, ['total', 'today'])
   assert.equal(withDefaults.enableDetailView, true)
   assert.equal(withDefaults.persistHistory, true)
+  // 定时自动刷新默认 5 分钟（此前根本没有这个定时器）
+  assert.equal(withDefaults.autoRefreshSeconds, 300)
   // 安全默认值：数字不离开本机（工具不注册）、允许零配置复用账号登录态
   assert.equal(withDefaults.exposeUsageToModel, false)
   assert.equal(withDefaults.useAccountSession, true)
@@ -153,6 +158,7 @@ test('Config 是 schemastery schema，默认值与 resolveConfig 一致', () => 
   assert.equal(resolved.cacheTTL.current, 300 * 1000)
   assert.equal(resolved.exposeUsageToModel, false)
   assert.equal(resolved.useAccountSession, true)
+  assert.equal(resolved.autoRefreshSeconds, 300)
 })
 
 test('默认不把用量数字暴露给模型：query_token_usage 不注册', () => {
@@ -169,7 +175,7 @@ test('默认不把用量数字暴露给模型：query_token_usage 不注册', ()
 
 test('显式开启 exposeUsageToModel 后才注册工具', () => {
   const { ctx, registered } = makeHostCtx()
-  apply(ctx as never, { persistHistory: false, exposeUsageToModel: true })
+  apply(ctx as never, { persistHistory: false, localUsage: false, exposeUsageToModel: true })
   assert.equal(registered.length, 1, '显式开启后才应注册')
   assert.equal((registered[0] as { name: string }).name, 'query_token_usage')
 })
@@ -184,7 +190,7 @@ test('Config 拒绝非法枚举并接受合法值', () => {
 
 test('apply 注册 query_token_usage 工具，且定义满足 dsh-tools 的真实校验规则', () => {
   const { ctx, registered } = makeHostCtx()
-  apply(ctx as never, { persistHistory: false, exposeUsageToModel: true })
+  apply(ctx as never, { persistHistory: false, localUsage: false, exposeUsageToModel: true })
 
   assert.equal(registered.length, 1, '应恰好注册一个工具')
   const tool = registered[0] as {
@@ -213,7 +219,18 @@ test('apply 注册 query_token_usage 工具，且定义满足 dsh-tools 的真�
   }
   assert.equal(params.type, 'object')
   assert.equal(params.properties?.scope?.type, 'string')
-  assert.deepEqual(params.properties?.scope?.enum, ['total', 'today', 'week', 'month', 'project'])
+  assert.deepEqual(params.properties?.scope?.enum, [
+    'total',
+    'today',
+    'week',
+    'month',
+    'last7',
+    'last30',
+    'project',
+  ])
+  // 新增的滚动窗口必须在描述里出现，否则模型看不出 last30 与控制台「近 30 天」同口径，
+  // 会继续拿「本月」去和官方对比（用户实际遇到的困惑）。
+  assert.match(params.properties?.scope?.description ?? '', /近 30 天/)
   assert.ok(params.properties?.scope?.description)
   assert.deepEqual(params.required, ['scope'])
 
@@ -241,7 +258,7 @@ test('回归：parameters 必须是成品 JSON Schema，不是 dsh-tools 的参�
   //   Invalid schema for function 'query_token_usage':
   //   schema must be a JSON Schema of 'type: "object"', got 'type: null'.
   const { ctx, registered } = makeHostCtx()
-  apply(ctx as never, { persistHistory: false, exposeUsageToModel: true })
+  apply(ctx as never, { persistHistory: false, localUsage: false, exposeUsageToModel: true })
   const tool = registered[0] as { parameters: Record<string, unknown> }
 
   const schema = tool.parameters
@@ -294,7 +311,7 @@ test('apply 等待 connection/webServer 并挂载 /tlogs RPC 通道', () => {
 
 test('useAccountSession:false 时连可选注入都不发起，插件全程不接触账号服务', () => {
   const { ctx, injectedNames } = makeHostCtx()
-  apply(ctx as never, { persistHistory: false, useAccountSession: false })
+  apply(ctx as never, { persistHistory: false, localUsage: false, useAccountSession: false })
 
   assert.equal(
     injectedNames.some((names) => names.includes('deepseekAccount')),
@@ -310,7 +327,7 @@ test('export 端点已停用：不再返回含项目绝对路径的全量报告'
   delete process.env.DEEPSEEK_PLATFORM_USER_TOKEN
   try {
     const { ctx, rpcHandlers } = makeHostCtx()
-    apply(ctx as never, { persistHistory: false, platformUserToken: '', requestIntervalMs: 0 })
+    apply(ctx as never, { persistHistory: false, localUsage: false, platformUserToken: '', requestIntervalMs: 0 })
     const handler = rpcHandlers.get(TLOGS_CHANNEL)
     assert.ok(handler)
 
@@ -331,7 +348,7 @@ test('强制刷新有最小间隔（已认证页面代码无法把它打成循�
   delete process.env.DEEPSEEK_PLATFORM_USER_TOKEN
   try {
     const { ctx, rpcHandlers } = makeHostCtx()
-    apply(ctx as never, { persistHistory: false, platformUserToken: '', requestIntervalMs: 0 })
+    apply(ctx as never, { persistHistory: false, localUsage: false, platformUserToken: '', requestIntervalMs: 0 })
     const handler = rpcHandlers.get(TLOGS_CHANNEL)
     assert.ok(handler)
 
@@ -392,7 +409,7 @@ test('方案 D 端到端：走 x-dsh-auth-token、保留合法 x- 头、且短 T
   }) as unknown as typeof fetch
 
   try {
-    apply(ctx as never, { persistHistory: false, requestIntervalMs: 0 })
+    apply(ctx as never, { persistHistory: false, localUsage: false, requestIntervalMs: 0 })
     const handler = rpcHandlers.get(TLOGS_CHANNEL)
     assert.ok(handler)
 
@@ -449,7 +466,7 @@ test('账号服务不可用时插件照常加载（可选注入，不是加载�
       throw new Error('unknown service deepseekAccount')
     },
   }
-  assert.doesNotThrow(() => apply(ctx as never, { persistHistory: false, exposeUsageToModel: true }))
+  assert.doesNotThrow(() => apply(ctx as never, { persistHistory: false, localUsage: false, exposeUsageToModel: true }))
   assert.equal(registered.length, 1, '工具仍应注册')
 })
 
@@ -468,7 +485,7 @@ test('没有可用 token 时不发起网络请求，快照报告 auth=missing', 
   try {
     const { ctx, registered } = makeHostCtx()
     apply(ctx as never, {
-      persistHistory: false,
+      persistHistory: false, localUsage: false,
       platformUserToken: '',
       requestIntervalMs: 0,
       exposeUsageToModel: true,
@@ -494,7 +511,7 @@ test('快照下发 loginAvailable，如实反映宿主能否创建登录窗口',
 
   try {
     const { ctx, rpcHandlers } = makeHostCtx()
-    apply(ctx as never, { persistHistory: false, platformUserToken: '', requestIntervalMs: 0 })
+    apply(ctx as never, { persistHistory: false, localUsage: false, platformUserToken: '', requestIntervalMs: 0 })
     await new Promise((r) => setTimeout(r, 50))
 
     const handler = rpcHandlers.get(TLOGS_CHANNEL)
@@ -518,13 +535,61 @@ test('快照下发 loginAvailable，如实反映宿主能否创建登录窗口',
   }
 })
 
+test('快照的紧凑条在「今日」之后紧跟今日请求数（unit=requests）', async () => {
+  const saved = process.env.DEEPSEEK_PLATFORM_USER_TOKEN
+  delete process.env.DEEPSEEK_PLATFORM_USER_TOKEN
+  try {
+    const { ctx, rpcHandlers } = makeHostCtx()
+    apply(ctx as never, { persistHistory: false, localUsage: false, platformUserToken: '', requestIntervalMs: 0 })
+    const handler = rpcHandlers.get(TLOGS_CHANNEL)
+    assert.ok(handler, `应挂载 ${TLOGS_CHANNEL} 通道`)
+
+    const res = (await handler('tlogs.snapshot')) as {
+      value: { compact: Array<{ scope: string; label: string; value: number; unit?: string }> }
+    }
+    const metrics = res.value.compact
+
+    // 默认 compactMetrics = ['total','today']；today 会产出两项（token + 请求数），
+    // 因此指标是 [总, 今日, 请求]，请求数落在索引 2 并**紧跟**在今日 token 之后。
+    // 金额默认不进紧凑条（侧边栏页脚太窄会把标签挤成碎片），只在展开面板的卡片里看。
+    assert.deepEqual(
+      metrics.map((m) => m.label),
+      ['总', '今日', '请求'],
+      '今日请求数必须紧跟在今日 token 之后',
+    )
+    assert.equal(metrics.some((m) => m.unit === 'money'), false, '默认紧凑条不应含金额项')
+    const reqIdx = metrics.findIndex((m) => m.unit === 'requests')
+    assert.equal(reqIdx, 2, '请求数必须带 unit=requests 以区分单位')
+    assert.equal(metrics[reqIdx]!.scope, 'today', '请求数沿用 today 这个 scope')
+    assert.equal(metrics[reqIdx - 1]!.label, '今日', '请求数必须紧跟在今日 token 之后')
+    assert.equal(typeof metrics[reqIdx]!.value, 'number')
+    assert.equal(metrics[reqIdx - 1]!.unit, undefined, '今日 token 项不应带 requests 单位')
+
+    // 金额项是**可选**的（`cost_total`）：显式开启时必须带 unit=money，
+    // 否则紧凑条会把它按 token 格式化成「676」而不是「¥676.07」。
+    const moneyCtxPair = makeHostCtx()
+    apply(moneyCtxPair.ctx as never, {
+      persistHistory: false, localUsage: false,
+      platformUserToken: '',
+      requestIntervalMs: 0,
+      compactMetrics: ['cost_total'],
+    })
+    const moneyRes = (await moneyCtxPair.rpcHandlers.get(TLOGS_CHANNEL)!('tlogs.snapshot')) as {
+      value: { compact: Array<{ unit?: string; value: number }> }
+    }
+    assert.equal(moneyRes.value.compact[0]?.unit, 'money', '金额项必须带 unit=money')
+  } finally {
+    if (saved !== undefined) process.env.DEEPSEEK_PLATFORM_USER_TOKEN = saved
+  }
+})
+
 test('RPC setToken 拒绝超长/空白/非字符串输入（入口会把入参落盘并当请求头发出去）', async () => {
   const saved = process.env.DEEPSEEK_PLATFORM_USER_TOKEN
   delete process.env.DEEPSEEK_PLATFORM_USER_TOKEN
 
   try {
     const { ctx, rpcHandlers } = makeHostCtx()
-    apply(ctx as never, { persistHistory: false, platformUserToken: '', requestIntervalMs: 0 })
+    apply(ctx as never, { persistHistory: false, localUsage: false, platformUserToken: '', requestIntervalMs: 0 })
     const handler = rpcHandlers.get(TLOGS_CHANNEL)
     assert.ok(handler, `应挂载 ${TLOGS_CHANNEL} 通道`)
 
@@ -547,7 +612,7 @@ test('RPC setToken 拒绝超长/空白/非字符串输入（入口会把入参�
 
 test('未知 scope 直接抛错（模型会看到 Error: ...）', async () => {
   const { ctx, registered } = makeHostCtx()
-  apply(ctx as never, { persistHistory: false, requestIntervalMs: 0, exposeUsageToModel: true })
+  apply(ctx as never, { persistHistory: false, localUsage: false, requestIntervalMs: 0, exposeUsageToModel: true })
   const tool = registered[0] as { execute: (a: unknown, e: unknown) => Promise<unknown> }
   await assert.rejects(
     () => tool.execute({ scope: 'nope' }, { signal: new AbortController().signal }),
@@ -592,4 +657,95 @@ test('resolveConfig 对越界输入做夹取而非崩溃', () => {
   assert.equal(c.maxToolRows, 200)
   assert.equal(c.numberFormat, 'short')
   assert.deepEqual(c.compactMetrics, ['total'])
+})
+
+test('双路数据源端到端：没有平台凭据时，今日卡片仍由本机会话日志给出', async () => {
+  // 场景：用户根本不用 DeepSeek 模型 / 平台凭据不可用。平台口径全为 0，
+  // 但本机确实产生了用量 —— 此时窗口卡片必须由本机口径填上，而不是显示 0。
+  const savedToken = process.env.DEEPSEEK_PLATFORM_USER_TOKEN
+  const savedHome = process.env.DSH_HOME
+  delete process.env.DEEPSEEK_PLATFORM_USER_TOKEN
+
+  const home = mkdtempSync(join(tmpdir(), 'tlogs-home-'))
+  const sessionDir = join(home, 'sessions', 'ws', 's1')
+  mkdirSync(sessionDir, { recursive: true })
+  const now = Date.now()
+  const records = [
+    { type: 'session', version: 4, id: 's1', createdAt: now - 60_000, cwd: 'C:/x' },
+    { type: 'request/header', time: now - 50_000, data: { header: { config: { provider: 'xiaomi', model: 'mimo' } } } },
+    {
+      type: 'assistant/message',
+      time: now - 40_000,
+      data: {
+        turn: 1,
+        step: 1,
+        usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 1000, cacheWriteTokens: 0 },
+        message: { source: { provider: 'xiaomi', model: 'mimo' } },
+      },
+    },
+  ]
+  writeFileSync(
+    join(sessionDir, 'session.v4.jsonl'),
+    records.map((r) => JSON.stringify(r)).join('\n') + '\n',
+  )
+  process.env.DSH_HOME = home
+
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () => {
+    throw new Error('没有凭据时不得发起网络请求')
+  }) as typeof fetch
+
+  try {
+    const { ctx, rpcHandlers } = makeHostCtx()
+    apply(ctx as never, { persistHistory: false, platformUserToken: '', requestIntervalMs: 0 })
+    const handler = rpcHandlers.get(TLOGS_CHANNEL)
+    assert.ok(handler)
+
+    // refresh 在没有凭据时会提前返回，本机扫描是并行跑的 —— 轮询快照等它落地。
+    let snap:
+      | {
+          value: {
+            cards: Array<{ scope: string; stat: { totalTokens: number }; source?: { kind: string; otherProviders: unknown[] } }>
+            localUsage?: { available: boolean; days: number }
+          }
+        }
+      | undefined
+    for (let i = 0; i < 40; i++) {
+      snap = (await handler('tlogs.snapshot')) as typeof snap
+      if ((snap?.value.cards.find((c) => c.scope === 'today')?.stat.totalTokens ?? 0) > 0) break
+      await new Promise((r) => setTimeout(r, 50))
+    }
+
+    const today = snap!.value.cards.find((c) => c.scope === 'today')!
+    assert.equal(today.stat.totalTokens, 1015, '今日应由本机口径给出（10 + 1000 + 5）')
+    assert.equal(today.source?.kind, 'local', '来源应标记为本机口径')
+    assert.deepEqual(today.source?.otherProviders, [{ provider: 'xiaomi', tokens: 1015 }])
+    assert.equal(snap!.value.localUsage?.available, true)
+
+    // 总消耗也要含本机补充：平台这份 token 平台永远看不到，不加就永远缺一块。
+    const total = snap!.value.cards.find((c) => c.scope === 'total')!
+    assert.equal(total.stat.totalTokens, 1015, '总消耗 = 平台全量（此处为 0）+ 本机补充')
+    assert.equal(total.source?.kind, 'local')
+
+    // 详细数据的「供应商」页签：供应商 + 对应模型。
+    const detail = (await handler('tlogs.detail')) as {
+      value: {
+        providers?: Array<{ label: string; stat: { totalTokens: number } }>
+        localRange?: { from: string; to: string; days: number; files: number }
+      }
+    }
+    assert.deepEqual(
+      detail.value.providers?.map((r) => r.label),
+      ['xiaomi · mimo'],
+      '应记录供应商与对应模型',
+    )
+    assert.equal(detail.value.providers?.[0]?.stat.totalTokens, 1015)
+    assert.equal(detail.value.localRange?.days, 1, 'detail 应带本机口径的覆盖区间')
+  } finally {
+    globalThis.fetch = originalFetch
+    if (savedToken !== undefined) process.env.DEEPSEEK_PLATFORM_USER_TOKEN = savedToken
+    if (savedHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = savedHome
+    rmSync(home, { recursive: true, force: true })
+  }
 })

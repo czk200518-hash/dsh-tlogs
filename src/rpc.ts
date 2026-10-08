@@ -14,6 +14,7 @@
 
 import { RPC } from './types.js'
 import { TLOGS_TOKEN_REF } from './auth/credentials-store.js'
+import { isDateKey, isProjectId } from './store/project-history.js'
 import type { Logger, UsageService } from './service.js'
 import type { TokenManager } from './auth/token-manager.js'
 
@@ -50,6 +51,17 @@ export const MAX_TOKEN_INPUT = 4096
  * 会话的页面代码都能调用该端点，因此必须设下限。
  */
 export const MIN_FORCED_REFRESH_MS = 5000
+
+/**
+ * 图表自定义范围的最大跨度（天）。
+ *
+ * 范围越大，`tlogs.series` 的响应里逐日数组越长（每年约 365 条）。上限设成 10 年，
+ * 既覆盖本机全部历史，又不给「构造一个超大范围把响应撑爆」留口子。
+ */
+export const MAX_SERIES_DAYS = 3660
+
+/** 允许的图表范围预设。`last7` / `last30` 是滚动窗口（含今天）。 */
+const CHART_RANGES = ['all', 'custom', 'today', 'week', 'month', 'last7', 'last30'] as const
 
 /** 把任何文本压成**单行**安全文本：去控制字符，防止日志注入与多行伪造。 */
 function oneLine(s: string, max = 200): string {
@@ -107,6 +119,61 @@ export function makeRpcHandler(deps: RpcDeps) {
 
         case RPC.detail:
           return ok(service.detail())
+
+        case RPC.month: {
+          // 日历查询：拉取指定年月的逐日明细。入参必须严格校验（客户端可传任意值）。
+          const year = Number(payload.year)
+          const month = Number(payload.month)
+          if (!Number.isInteger(year) || year < 2000 || year > 2100) {
+            return fail('invalid-input', 'year 无效')
+          }
+          if (!Number.isInteger(month) || month < 1 || month > 12) {
+            return fail('invalid-input', 'month 无效')
+          }
+          return ok(service.monthDetail(year, month))
+        }
+
+        case RPC.series: {
+          // 图表数据。入参全部来自客户端，**一律严格校验**后再交给 service。
+          const range = payload.range
+          if (typeof range !== 'string' || !(CHART_RANGES as readonly string[]).includes(range)) {
+            return fail('invalid-input', `range 无效（可选：${CHART_RANGES.join(' | ')}）`)
+          }
+
+          let from: string | undefined
+          let to: string | undefined
+          if (range === 'custom') {
+            if (!isDateKey(payload.from) || !isDateKey(payload.to)) {
+              return fail('invalid-input', '日期格式应为 YYYY-MM-DD')
+            }
+            if (payload.from > payload.to) {
+              return fail('invalid-input', '起始日期不能晚于结束日期')
+            }
+            const span =
+              (Date.parse(`${payload.to}T00:00:00Z`) - Date.parse(`${payload.from}T00:00:00Z`)) /
+              86_400_000
+            if (!Number.isFinite(span) || span > MAX_SERIES_DAYS) {
+              return fail('invalid-input', `范围过大（上限 ${MAX_SERIES_DAYS} 天）`)
+            }
+            from = payload.from
+            to = payload.to
+          }
+
+          let projectId: string | undefined
+          if (payload.projectId !== undefined && payload.projectId !== '') {
+            if (!isProjectId(payload.projectId)) return fail('invalid-input', 'projectId 无效')
+            projectId = payload.projectId
+          }
+
+          return ok(
+            await service.series({
+              range: range as (typeof CHART_RANGES)[number],
+              ...(from !== undefined ? { from } : {}),
+              ...(to !== undefined ? { to } : {}),
+              ...(projectId !== undefined ? { projectId } : {}),
+            }),
+          )
+        }
 
         case RPC.setToken: {
           const token = typeof payload.token === 'string' ? payload.token : ''

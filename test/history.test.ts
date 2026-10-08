@@ -183,12 +183,54 @@ test('plan(full)：首次拉取区间内全部月份', () => {
   assert.equal(plan.full, true)
 })
 
-test('plan(full)：跳过已成功缓存的月份', () => {
+test('plan(full)：跳过已成功缓存**且逐日明细已抓取**的月份', () => {
   const h = new HistoryStore()
-  h.set({ year: 2024, month: 4, stat: emptyStat(), models: {} })
+  h.set({ year: 2024, month: 4, stat: emptyStat(), models: {}, daysFetched: true })
   const plan = h.plan({ year: 2024, month: 4 }, { year: 2024, month: 6 }, false)
   assert.deepEqual(plan.months.map((m) => monthKey(m.year, m.month)), ['2024-05', '2024-06'])
   assert.equal(plan.full, false)
+})
+
+test('plan(full)：旧缓存缺 daysFetched 时一次性回补逐日明细，且只回补一次', () => {
+  const h = new HistoryStore()
+  // 模拟早期版本写入的行：有统计、能显示合计，但没有逐日明细标记
+  h.set({ year: 2024, month: 4, stat: emptyStat(), models: {} })
+
+  const first = h.plan({ year: 2024, month: 4 }, { year: 2024, month: 4 }, false)
+  assert.deepEqual(
+    first.months.map((m) => monthKey(m.year, m.month)),
+    ['2024-04'],
+    '缺少 daysFetched 的旧行必须被重抓一次（否则日历对这些月份永久空白）',
+  )
+
+  // 抓取完成后打上标记 → 不应再被判为需要回补，否则每次刷新都白跑全量请求
+  h.set({ year: 2024, month: 4, stat: emptyStat(), models: {}, daysFetched: true })
+  const second = h.plan({ year: 2024, month: 4 }, { year: 2024, month: 4 }, false)
+  assert.deepEqual(second.months, [], '回补过一次后必须跳过')
+})
+
+test('serialize/deserialize 必须保留 days 与 daysFetched（否则重启后日历永久空白）', () => {
+  const h = new HistoryStore()
+  const dayStat = emptyStat()
+  dayStat.REQUEST = 9
+  h.set({
+    year: 2025,
+    month: 3,
+    stat: emptyStat(),
+    models: {},
+    days: [
+      { date: '2025-03-01', stat: dayStat },
+      { date: '2025-03-02', stat: emptyStat() },
+    ],
+    daysFetched: true,
+  })
+
+  const restored = HistoryStore.deserialize(JSON.parse(JSON.stringify(h.serialize())))
+  const row = restored.get(2025, 3)
+  assert.equal(row?.days?.length, 2, '逐日明细必须被恢复')
+  assert.equal(row?.days?.[0]?.date, '2025-03-01')
+  assert.equal(row?.days?.[0]?.stat.REQUEST, 9)
+  assert.equal(row?.daysFetched, true, 'daysFetched 必须被恢复，否则每次重启都会白跑一轮全量回补')
 })
 
 test('plan(full)：失败的月份必须重试', () => {

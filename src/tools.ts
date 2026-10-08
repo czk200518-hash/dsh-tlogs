@@ -17,10 +17,11 @@
  */
 
 import type { UsageService } from './service.js'
-import type { ScopeStat, UsageScope } from './types.js'
+import { toScopeStat } from './api/parser.js'
+import { emptyStat, moneyTotal, type ScopeStat, type UsageScope } from './types.js'
 
 /** 工具可查询的范围。 */
-const SCOPES = ['total', 'today', 'week', 'month', 'project'] as const
+const SCOPES = ['total', 'today', 'week', 'month', 'last7', 'last30', 'project'] as const
 
 /**
  * 参数 JSON Schema。
@@ -55,7 +56,7 @@ const PARAMETERS = {
     scope: {
       type: 'string',
       description:
-        '查询范围：total（该账号有史以来全部用量）| today（今日）| week（本周一至今）| month（本月 1 日至今）| project（当前工作区项目）',
+        '查询范围：total（该账号有史以来全部用量）| today（今日）| week（本周一至今）| month（本月 1 日至今）| last7（最近 7 天，含今天）| last30（最近 30 天，含今天，与开放平台控制台「时间维度：近 30 天」同口径）| project（当前工作区项目）',
       enum: [...SCOPES],
     },
     projectId: {
@@ -75,6 +76,9 @@ const OUTPUT_SCHEMA = {
     outputTokens: { type: 'number' },
     totalTokens: { type: 'number' },
     requests: { type: 'number' },
+    /** 该范围的消费金额（元）；金额尚未回补到时缺省。 */
+    cost: { type: 'number' },
+    currency: { type: 'string' },
     note: { type: 'string' },
   },
   required: ['scope', 'inputTokens', 'outputTokens', 'totalTokens', 'requests'],
@@ -87,6 +91,8 @@ interface ToolPayload {
   outputTokens: number
   totalTokens: number
   requests: number
+  cost?: number
+  currency?: string
   note?: string
 }
 
@@ -99,6 +105,7 @@ function renderText(p: ToolPayload): string {
     `  输出：${p.outputTokens.toLocaleString('en-US')}`,
     `  请求次数：${p.requests.toLocaleString('en-US')}`,
   ]
+  if (p.cost !== undefined) lines.push(`  消费金额：${p.cost.toFixed(4)} ${p.currency ?? 'CNY'}`)
   if (p.note) lines.push(`  说明：${p.note}`)
   return lines.join('\n')
 }
@@ -175,18 +182,29 @@ function scopeDetail(service: UsageService, scope: UsageScope): ToolPayload {
         ? 'today（今日）'
         : scope === 'week'
           ? 'week（本周一至今）'
-          : 'month（本月 1 日至今）'
+          : scope === 'month'
+            ? 'month（本月 1 日至今）'
+            : scope === 'last7'
+              ? 'last7（最近 7 天，含今天）'
+              : 'last30（最近 30 天，含今天）'
   return toPayload(label, service.statForScope(scope))
 }
 
 /** 组装载荷。 */
 function toPayload(scope: string, stat?: ScopeStat): ToolPayload {
-  const s = stat ?? { inputTokens: 0, outputTokens: 0, totalTokens: 0, requests: 0 }
-  return {
+  const s: ScopeStat = stat ?? toScopeStat(emptyStat())
+  const out: ToolPayload = {
     scope,
     inputTokens: s.inputTokens,
     outputTokens: s.outputTokens,
     totalTokens: s.totalTokens,
     requests: s.requests,
   }
+  // 金额按需带上：没有金额数据时不输出 `cost: 0`，否则模型会断言「这段时间没花钱」，
+  // 而实际只是金额还没回补到。
+  if (s.cost) {
+    out.cost = moneyTotal(s.cost)
+    out.currency = s.currency ?? 'CNY'
+  }
+  return out
 }

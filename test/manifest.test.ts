@@ -105,7 +105,20 @@ test('模板里的每个 config 值都能被 schemastery 校验通过', () => {
   assert.equal(validated.requestIntervalMs, 1000)
   assert.deepEqual(validated.cacheTTL, { total: 1800, current: 300 })
   assert.equal(validated.numberFormat, 'short')
+  // 模板默认值必须与 resolveConfig 的默认值一致（'total' + 'today'；金额不进紧凑条）。
   assert.deepEqual(validated.compactMetrics, ['total', 'today'])
+  // 滚动窗口与金额指标都必须是合法枚举（拼错会被 schemastery 拒掉，
+  // 但「拼对了但没进 union」同样会让紧凑条静默少一项，所以这里显式正面验证）。
+  assert.deepEqual(validate({ ...row.config, compactMetrics: ['last7', 'last30'] }).compactMetrics, [
+    'last7',
+    'last30',
+  ])
+  assert.deepEqual(
+    validate({ ...row.config, compactMetrics: ['cost_total', 'cost_today', 'cost_last7', 'cost_last30'] })
+      .compactMetrics,
+    ['cost_total', 'cost_today', 'cost_last7', 'cost_last30'],
+  )
+  assert.equal(validated.autoRefreshSeconds, 300)
 
   // 反向对照：证明上面的「通过」不是空转 —— 同一 schema 必须拒绝非法枚举。
   assert.throws(() => validate({ ...row.config, numberFormat: 'nope' }))

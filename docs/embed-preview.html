@@ -23,7 +23,15 @@
     margin: 0; padding: 24px; background: #ffffff; color: var(--dsw-alias-label-primary);
     font-family: var(--dsw-font-family);
   }
-  body[data-ds-dark-theme] {
+  /*
+   * 深色 token 必须同时挂在 body 与带 data-ds-dark-theme 的**内联预览框**上。
+   *
+   * 原先只有 body[data-ds-dark-theme]，而深色示例用的是
+   * <div class="frame" data-ds-dark-theme>，选择器根本不匹配 —— 于是深色框里
+   * 组件拿到的还是浅色 token，表现为深底上的深色文字（几乎看不见）。这个坑一直
+   * 在，正好在核对图表深色可读性时暴露出来。
+   */
+  body[data-ds-dark-theme], [data-ds-dark-theme] {
     --dsw-alias-label-primary: #e6edf3;
     --dsw-alias-label-tertiary: #8b949e;
     --dsw-alias-bg-layer-1: #21262d;
@@ -32,6 +40,8 @@
     --dsw-alias-border-l3: #30363d;
     --dsw-alias-border-l4: #3d444d;
     --dsw-alias-interactive-bg-hover: #21262d;
+  }
+  body[data-ds-dark-theme] {
     background: #0d1117;
   }
   .warn { background: #fff8c5; color: #4d2d00; border: 1px solid #d4a72c66; padding: 10px 14px; border-radius: 6px; font-size: 13px; margin-bottom: 18px; }
@@ -67,8 +77,30 @@
   --tlogs-accent: var(--dsw-alias-state-business-primary, #4d6bfe);
   --tlogs-warn: var(--dsw-alias-state-warn-primary, #d97706);
   --tlogs-danger: var(--dsw-alias-state-error-primary, #dc2626);
+  /*
+   * 金额专用色。
+   *
+   * 为什么不复用「成功绿」：金额是**中性计量**，不是状态。用绿色会让人以为
+   * 「花得多 = 好」，而这里只是把 ¥ 与旁边的 token 数在视觉上分开。
+   * 选一个在浅色/深色主题下都有足够对比度的琥珀色作为主色。
+   */
+  --tlogs-money: var(--dsw-alias-state-warn-primary, #c2740a);
   --tlogs-radius: var(--dsw-radius-xs, 4px);
   --tlogs-gap: 6px;
+
+  /*
+   * 图表配色。
+   *
+   * 前三个是堆叠柱的三段（输入·缓存命中 / 输入·缓存未命中 / 输出）；后三个是饼图的
+   * 备用色。刻意选在浅色与深色主题下都能分辨的中间明度，且不依赖宿主的语义 token
+   * （它们没有「图表色板」这一类）。
+   */
+  --tlogs-c1: var(--dsw-alias-state-business-primary, #4d6bfe);
+  --tlogs-c2: #7c5cff;
+  --tlogs-c3: #f0a020;
+  --tlogs-c4: #14b8a6;
+  --tlogs-c5: #ef4444;
+  --tlogs-c6: #8b8fa3;
 
   box-sizing: border-box;
   display: flex;
@@ -149,6 +181,8 @@
   font-weight: 600;
   letter-spacing: -0.01em;
 }
+/* 紧凑条上的金额：与 token 数字同字号，但用金额色区分，并保留 ¥ 符号。 */
+.tlogs-metric-money { color: var(--tlogs-money); }
 .tlogs-sep { color: var(--tlogs-muted); opacity: 0.6; flex: 0 0 auto; }
 
 .tlogs-actions { display: inline-flex; align-items: center; gap: 2px; flex: 0 0 auto; }
@@ -179,6 +213,14 @@
   background: var(--tlogs-hover);
 }
 .tlogs-iconbtn:focus-visible { outline: 2px solid var(--tlogs-accent); outline-offset: 1px; }
+.tlogs-iconbtn:disabled { opacity: 0.45; cursor: default; }
+.tlogs-iconbtn:disabled:hover {
+  color: var(--tlogs-fg);
+  border-color: var(--tlogs-border-strong);
+  background: var(--tlogs-card-bg);
+}
+/* 收起态（图标栏）空间不足：隐藏手动刷新，只留展开/收起。 */
+.tlogs-collapsed .tlogs-refresh { display: none; }
 
 /* 数据可能过期角标（需求 5.4） */
 .tlogs-stale { flex: 0 0 auto; font-size: 10px; color: var(--tlogs-warn); cursor: help; }
@@ -200,14 +242,21 @@
 }
 
 /* ---------- 形态 B：展开面板（就地撑开） ---------- */
+/*
+ * 高度上限刻意放宽。
+ *
+ * 原来是写死的 300px：五张卡片在双列布局下需要约 370px，于是第五张（当月消耗）
+ * 被截断、必须滚动才能看到——实测截图确认。现在改用视口相关的上限，常规窗口下
+ * 五张卡片可以一次看全；overflow-y: auto 只作为极小窗口的最后兜底。
+ */
 .tlogs-panel {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   width: 100%;
-  padding: 8px 6px 10px;
+  padding: 7px 6px 8px;
   margin-top: 2px;
-  max-height: 300px;
+  max-height: min(72vh, 520px);
   overflow-y: auto;
   overscroll-behavior: contain;
   background: var(--tlogs-panel-bg);
@@ -217,7 +266,7 @@
 }
 @keyframes tlogs-expand {
   from { max-height: 0; opacity: 0; }
-  to { max-height: 300px; opacity: 1; }
+  to { max-height: min(72vh, 520px); opacity: 1; }
 }
 @media (prefers-reduced-motion: reduce) {
   .tlogs-panel { animation: none; }
@@ -237,14 +286,23 @@
 }
 .tlogs-notice-danger { background: color-mix(in srgb, var(--tlogs-danger) 14%, transparent); }
 
-.tlogs-cards { display: grid; grid-template-columns: 1fr; gap: 6px; }
+.tlogs-cards { display: grid; grid-template-columns: 1fr; gap: 5px; }
 .tlogs-w-full .tlogs-cards { grid-template-columns: 1fr 1fr; }
+/*
+ * 总消耗是主指标：**始终占满一整行**（与网格同宽），其余卡片两两成行。
+ *
+ * buildCards() 保证「总消耗 Token」永远是第一张卡片，所以用 :first-child 即可。
+ * 早前这里是「最后一张在奇数位时横跨两列」，那是为了让落单的当月消耗不至于半行——
+ * 现在主指标占了整行，剩余四张正好两两成行，那条规则反而会挤出空位，故移除。
+ */
+.tlogs-w-full .tlogs-cards > :first-child { grid-column: 1 / -1; }
 
+/* 卡片排版压紧：五张卡片要能一次看全，不能靠滚动。 */
 .tlogs-card {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 7px 8px;
+  gap: 3px;
+  padding: 5px 7px;
   border-radius: var(--tlogs-radius);
   background: var(--tlogs-card-bg);
   border: 1px solid transparent;
@@ -262,20 +320,63 @@
 }
 .tlogs-card-title {
   font-size: 10px;
+  line-height: 1.25;
   color: var(--tlogs-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .tlogs-card-total {
-  font-size: 15px;
+  font-size: 14px;
+  line-height: 1.25;
   font-weight: 650;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em;
 }
 .tlogs-card-total.is-error { font-size: 11px; font-weight: 400; color: var(--tlogs-muted); }
-.tlogs-card-split { display: flex; flex-wrap: wrap; gap: 6px 10px; font-size: 10px; color: var(--tlogs-muted); }
+.tlogs-card-split {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 8px;
+  font-size: 9.5px;
+  line-height: 1.3;
+  color: var(--tlogs-muted);
+}
 .tlogs-card-split b { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--tlogs-fg); }
+
+/* 卡片的主数字行：左侧 token 总量，右侧金额。
+   用 flex + 基线对齐，并让金额 flex: 0 0 auto（永不压缩）——
+   侧边栏很窄，一旦金额被压缩就会退化成「¥1…」，那比不显示更糟。 */
+.tlogs-card-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+.tlogs-card-money {
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  line-height: 1.25;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--tlogs-money);
+  white-space: nowrap;
+}
+
+/* 平台账户概览（余额 / 官方累计消费）。 */
+.tlogs-account {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  font-size: 10px;
+  color: var(--tlogs-muted);
+}
+.tlogs-account b {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--tlogs-money);
+}
 
 .tlogs-footer-actions {
   display: flex;
@@ -352,11 +453,294 @@
   font-variant-numeric: tabular-nums;
   border-bottom: 1px solid var(--tlogs-border);
 }
+/* 金额列：用金额色与旁边四个整数列区分开（它们是 token / 次数，不是钱）。 */
+.tlogs-table td.tlogs-td-money { color: var(--tlogs-money); font-weight: 600; }
 .tlogs-empty { padding: 10px 4px; text-align: center; color: var(--tlogs-muted); font-size: 11px; }
 .tlogs-scroll { max-height: 190px; overflow-y: auto; overscroll-behavior: contain; }
 .tlogs-error { color: var(--tlogs-danger); font-size: 10px; line-height: 1.5; }
 /* 说明性提示（例如「内置登录不可用，请手动填写」）。 */
 .tlogs-hint { color: var(--tlogs-muted); font-size: 10px; line-height: 1.55; }
+
+/* ---------- 详细数据弹窗（浮层） ---------- */
+/*
+ * 这是全文件唯一使用 position: fixed 的地方。
+ * 紧凑条与展开面板仍然严格留在文档流内（需求 1.1）—— 那一条针对的是侧边栏页脚里的
+ * 内嵌组件；弹窗本质上就该是浮层，否则在窄侧边栏里放不下日历与表格。
+ */
+.tlogs-modal-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: color-mix(in srgb, #000 45%, transparent);
+}
+/*
+ * 弹窗尺寸**恒定**：宽高都写死（仅随视口收缩），内容多少一律靠 body 内部滚动消化。
+ *
+ * 为什么不能再靠 min-height / max-height：那样高度是「内容的函数」——
+ * 日历页签 6 行固定、图表页签三张图叠起来很高、表格页签行数不定，切页签时
+ * 弹窗会跟着变高变矮（用户实测反馈）。固定高度之后，无论切主页签、切图形子标签，
+ * 还是切换范围/项目/指标让内容变多，弹窗外框永远是同一个矩形。
+ */
+.tlogs-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(760px, 94vw);
+  height: min(720px, 84vh);
+  overflow: hidden;
+  border: 1px solid var(--tlogs-border-strong);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-1, #1b1f24);
+  color: var(--tlogs-fg);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+  font-family: var(--dsw-font-family, inherit);
+  font-size: 12px;
+}
+.tlogs-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 12px;
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--tlogs-border);
+}
+.tlogs-modal-title { font-size: 13px; font-weight: 600; }
+.tlogs-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px 12px;
+  /* 把剩余高度全部吃掉并在内部滚动：body 的高度不再由内容决定。 */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.tlogs-table-wrap { max-height: 52vh; overflow-y: auto; overscroll-behavior: contain; }
+
+/* ---------- 日历 ---------- */
+.tlogs-cal-nav { display: flex; align-items: center; gap: 6px; }
+.tlogs-cal-select { flex: 1 1 auto; }
+.tlogs-cal-summary,
+.tlogs-cal-detail {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 6px 8px;
+  border-radius: var(--tlogs-radius);
+  background: var(--tlogs-card-bg);
+  font-size: 10px;
+}
+.tlogs-cal-summary-title { color: var(--tlogs-muted); font-weight: 600; }
+.tlogs-cal-detail { min-height: 30px; }
+/*
+ * 行高固定 52px：配合「始终渲染 42 格」，切月时网格高度完全不变。
+ *
+ * 52 而不是 40，是因为每格现在是三行（日号 / token / 金额）。金额那一行**无条件**
+ * 占位（无数据时渲染空串），所以有金额与没金额的月份格子高度仍完全相同 ——
+ * 一旦按需渲染，切月时高度又会跳，那正是「固定 42 格」要解决的问题。
+ */
+.tlogs-cal {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-auto-rows: 52px;
+  gap: 3px;
+}
+.tlogs-cal-head { text-align: center; font-size: 10px; color: var(--tlogs-muted); padding: 2px 0; }
+.tlogs-cal-cell {
+  appearance: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  min-height: 52px;
+  min-width: 0;
+  padding: 2px;
+  border: 1px solid transparent;
+  border-radius: var(--tlogs-radius);
+  background: var(--tlogs-card-bg);
+  color: var(--tlogs-fg);
+  cursor: pointer;
+  font-family: inherit;
+}
+.tlogs-cal-cell.is-empty { background: transparent; border-color: transparent; cursor: default; }
+.tlogs-cal-cell:hover { border-color: var(--tlogs-border-strong); }
+.tlogs-cal-cell.is-selected { border-color: var(--tlogs-accent); }
+.tlogs-cal-day { font-size: 10px; color: var(--tlogs-muted); }
+.tlogs-cal-val { font-size: 9.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+/* 金额行：即使没有金额也保留这一行（min-height 占位），保证每格行数恒定。 */
+.tlogs-cal-money {
+  min-height: 11px;
+  font-size: 9px;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  color: var(--tlogs-money);
+  white-space: nowrap;
+}
+
+/* ---------- 图表（详细数据弹窗的「图表」页签） ---------- */
+/*
+ * 全部是内联 SVG，几何换算在 chart-utils.ts（有单测）。这里只管颜色与排版：
+ * 柱/线的填充一律走 --tlogs-cN，因此浅色与深色主题自动跟随。
+ *
+ * 关于高度：每张图的高度由 viewBox 决定、宽度 100% 等比缩放，所以切换范围/粒度
+ * 时卡片高度不会跳（点数变化只影响柱宽与标签密度）。
+ */
+.tlogs-chart-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.tlogs-ctl-group { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+.tlogs-ctl-label { font-size: 10px; color: var(--tlogs-muted); white-space: nowrap; }
+.tlogs-chart-select { flex: 0 1 auto; min-width: 118px; max-width: 220px; }
+.tlogs-chart-date { flex: 0 1 auto; min-width: 132px; }
+
+/*
+ * 图形子标签行：紧贴主页签下面，右侧留出「构成维度」的位置。
+ * 行本身用固定高度，这样切子标签（或让右侧按钮出现/消失）不会挪动下面的内容。
+ */
+.tlogs-subtabs {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+}
+
+/*
+ * 图形舞台：**固定最小高度**。
+ *
+ * 三张图的高度天然不同（折线 220、堆叠柱 236、环形 170）。给舞台一个统一的下界，
+ * 再让卡片撑满，切子标签时下方内容不会上下跳 —— 加上弹窗外框本身固定，
+ * 整体就是「怎么点都不动」。
+ */
+.tlogs-chart-stage {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 372px;
+}
+.tlogs-chart-stage > .tlogs-chart-card { flex: 1 1 auto; }
+
+.tlogs-chart-scope {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  padding: 5px 8px;
+  border-radius: var(--tlogs-radius);
+  background: var(--tlogs-card-bg);
+  font-size: 10px;
+}
+.tlogs-chart-scope-range { font-weight: 600; font-variant-numeric: tabular-nums; }
+.tlogs-chart-scope-note { color: var(--tlogs-muted); }
+.tlogs-chart-busy { color: var(--tlogs-accent); }
+
+.tlogs-chart-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px 10px;
+  border: 1px solid var(--tlogs-border);
+  border-radius: 6px;
+  background: var(--tlogs-card-bg);
+}
+.tlogs-chart-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.tlogs-chart-title { display: inline-flex; align-items: baseline; gap: 6px; font-size: 11px; font-weight: 600; }
+.tlogs-chart-sub { font-size: 9.5px; font-weight: 400; color: var(--tlogs-muted); }
+.tlogs-chart-dim { display: inline-flex; gap: 3px; }
+
+.tlogs-chart-svg { display: block; width: 100%; height: auto; }
+.tlogs-axis-text { fill: var(--tlogs-muted); font-size: 9px; }
+.tlogs-axis-text.is-y { font-variant-numeric: tabular-nums; }
+.tlogs-grid { stroke: var(--tlogs-border); stroke-width: 1; }
+.tlogs-line { fill: none; stroke: var(--tlogs-accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.tlogs-area { fill: var(--tlogs-accent); opacity: 0.16; }
+.tlogs-dot { fill: var(--tlogs-accent); }
+.tlogs-guide { stroke: var(--tlogs-border-strong); stroke-width: 1; stroke-dasharray: 3 3; }
+.tlogs-hit { fill: transparent; }
+.tlogs-chart-svg .tlogs-hit { cursor: crosshair; }
+/* 柱子整体在悬停时提亮，命中区由上面的透明矩形承担。 */
+.tlogs-bar { transition: opacity 120ms ease; }
+.tlogs-bar:hover { opacity: 0.82; }
+
+.tlogs-fill-c1 { fill: var(--tlogs-c1); }
+.tlogs-fill-c2 { fill: var(--tlogs-c2); }
+.tlogs-fill-c3 { fill: var(--tlogs-c3); }
+.tlogs-stroke-c1 { stroke: var(--tlogs-c1); }
+.tlogs-stroke-c2 { stroke: var(--tlogs-c2); }
+.tlogs-stroke-c3 { stroke: var(--tlogs-c3); }
+.tlogs-stroke-c4 { stroke: var(--tlogs-c4); }
+.tlogs-stroke-c5 { stroke: var(--tlogs-c5); }
+.tlogs-stroke-c6 { stroke: var(--tlogs-c6); }
+.tlogs-swatch { display: inline-block; flex: 0 0 auto; width: 9px; height: 9px; border-radius: 2px; }
+.tlogs-swatch-c1 { background: var(--tlogs-c1); }
+.tlogs-swatch-c2 { background: var(--tlogs-c2); }
+.tlogs-swatch-c3 { background: var(--tlogs-c3); }
+.tlogs-swatch-c4 { background: var(--tlogs-c4); }
+.tlogs-swatch-c5 { background: var(--tlogs-c5); }
+.tlogs-swatch-c6 { background: var(--tlogs-c6); }
+.tlogs-swatch-req { background: var(--tlogs-fg); opacity: 0.55; }
+
+.tlogs-reqline { fill: none; stroke: var(--tlogs-fg); opacity: 0.5; stroke-width: 1.5; stroke-dasharray: 4 3; }
+.tlogs-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 9.5px; color: var(--tlogs-muted); }
+.tlogs-legend-item { display: inline-flex; align-items: center; gap: 4px; }
+
+.tlogs-chart-summary { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 10px; }
+.tlogs-chart-info {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  min-height: 26px;
+  padding: 5px 8px;
+  border-radius: var(--tlogs-radius);
+  background: var(--tlogs-panel-bg);
+  font-size: 10px;
+}
+.tlogs-chart-info.is-hint { color: var(--tlogs-muted); }
+.tlogs-chart-info-key { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.tlogs-donut-wrap { display: flex; flex: 1 1 auto; align-items: center; gap: 16px; flex-wrap: wrap; }
+.tlogs-donut { flex: 0 0 auto; width: 170px; height: 170px; }
+.tlogs-donut-seg { cursor: pointer; transition: stroke-width 120ms ease; }
+.tlogs-donut-center { fill: var(--tlogs-fg); font-size: 15px; font-weight: 600; }
+.tlogs-donut-sub { fill: var(--tlogs-muted); font-size: 9.5px; }
+.tlogs-donut-legend {
+  flex: 1 1 220px;
+  min-width: 0;
+  max-height: 172px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.tlogs-legend-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  border-radius: var(--tlogs-radius);
+  font-size: 10px;
+}
+.tlogs-legend-row.is-active { background: var(--tlogs-hover); }
+.tlogs-legend-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tlogs-legend-value { font-weight: 600; font-variant-numeric: tabular-nums; }
+.tlogs-legend-pct { width: 46px; text-align: right; color: var(--tlogs-muted); font-variant-numeric: tabular-nums; }
 
 </style>
 </head>
@@ -371,32 +755,55 @@
   </div>
 
   <h2>形态 A：紧凑条 <small>高 30px（需求 28–32px），位于侧边栏页脚</small></h2>
-  <div class="note">下面是模拟的侧边栏：上方虚线块代表工作区列表，控件固定在页脚区域内，完全参与正常文档流（不使用浮动定位）。</div>
+  <div class="note">下面是模拟的侧边栏：上方虚线块代表工作区列表，控件固定在页脚区域内，完全参与正常文档流（不使用浮动定位）。
+    默认指标是「总 Token · 总金额 · 今日 · 今日请求数」——金额项带 <code>unit: 'money'</code>，走金额格式（<code>¥675.74</code>）而不是 token 缩写。</div>
   <div class="row">
     <div class="sidebar">
       <div class="sidebar-head">侧边栏（展开）</div>
       <div class="fake-list"><i></i><i></i><i></i><i></i></div>
       <div class="sidebar-foot">
         <div class="foot-label">sidebar.footer.action 席位</div>
-        <div class="tlogs-compact" title="tlogs — DeepSeek 用量"><span class="tlogs-metrics"><span class="tlogs-metric" title="总 8,163,318,072 tokens"><span class="tlogs-metric-label">总</span><span class="tlogs-metric-value">8.2B</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="今日 165,703,639 tokens"><span class="tlogs-metric-label">今日</span><span class="tlogs-metric-value">166M</span></span></span><span class="tlogs-actions"><button type="button" class="tlogs-iconbtn" aria-expanded="false" aria-label="展开 tlogs 面板" title="展开">▾</button></span></div>
+        <div class="tlogs-compact" title="tlogs — DeepSeek 用量"><span class="tlogs-metrics"><span class="tlogs-metric" title="总 8,163,318,072 tokens"><span class="tlogs-metric-label">总</span><span class="tlogs-metric-value">8.2B</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="总 ¥ ¥675.7352 元"><span class="tlogs-metric-label">总 ¥</span><span class="tlogs-metric-value tlogs-metric-money">¥675.74</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="今日 165,703,639 tokens"><span class="tlogs-metric-label">今日</span><span class="tlogs-metric-value">166M</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="请求 1,642 次请求"><span class="tlogs-metric-label">请求</span><span class="tlogs-metric-value">1.6K</span></span></span><span class="tlogs-actions"><button type="button" class="tlogs-iconbtn tlogs-refresh" aria-label="刷新用量数据" title="刷新用量">↻</button><button type="button" class="tlogs-iconbtn" aria-expanded="false" aria-label="展开 tlogs 面板" title="展开">▾</button></span></div>
       </div>
     </div>
     <div class="sidebar slim">
       <div class="sidebar-head">收起</div>
       <div class="sidebar-foot">
-        <div class="tlogs-compact tlogs-collapsed" title="tlogs — DeepSeek 用量"><span class="tlogs-collapsed-value" title="总 8,163,318,072 tokens">8.2B</span><span class="tlogs-actions"><button type="button" class="tlogs-iconbtn" aria-expanded="false" aria-label="展开 tlogs 面板" title="展开">▾</button></span></div>
+        <div class="tlogs-compact tlogs-collapsed" title="tlogs — DeepSeek 用量"><span class="tlogs-collapsed-value" title="总 8,163,318,072 tokens">8.2B</span><span class="tlogs-actions"><button type="button" class="tlogs-iconbtn tlogs-refresh" aria-label="刷新用量数据" title="刷新用量">↻</button><button type="button" class="tlogs-iconbtn" aria-expanded="false" aria-label="展开 tlogs 面板" title="展开">▾</button></span></div>
       </div>
     </div>
   </div>
 
   <h2>形态 B：展开面板 <small>就地撑开，把上方内容顶上去（不覆盖）</small></h2>
-  <div class="note">注意上方工作区列表被顶起、面板占据页脚上方空间；底部一行是「详细数据 › / 刷新 / 退出登录」。</div>
+  <div class="note">
+    七张卡片：<b>总消耗 / 当前项目消耗 / 今日 / 当周 / 当月 / 近 7 天 / 近 30 天</b>。
+    「近 7 天 / 近 30 天」是<b>滚动窗口</b>（含今天、往前数 N 天），与开放平台控制台的
+    「时间维度」同口径 —— 这正是此前「插件和控制台对不上」的原因：以前只有「本月」
+    （自然月 1 日至今），而控制台截图用的是「近 30 天」。
+    <br>每张卡片的 ¥ 来自 <code>/api/v0/usage/cost</code>（金额接口，与 <code>usage/amount</code> 同构，
+    逐日日期逐个相同）；<b>没有金额数据时整行 ¥ 不渲染</b>，而不是显示 ¥0.00。
+    「当前项目消耗」读的是本机会话投影，平台账单里没有它的金额，所以刻意没有 ¥。
+    <br>底部一行还给出平台账户概览：<b>余额</b>与<b>官方累计消费</b>（<code>get_user_summary</code>），
+    后者就是控制台账单页那个数字，用来和插件按接口重算的金额对照。
+  </div>
   <div class="sidebar" style="min-height:420px">
     <div class="sidebar-head">侧边栏（展开 · 面板已展开）</div>
     <div class="fake-list"><i></i><i></i></div>
     <div class="sidebar-foot">
-      <div class="tlogs-compact" title="tlogs — DeepSeek 用量"><span class="tlogs-metrics"><span class="tlogs-metric" title="总 8,163,318,072 tokens"><span class="tlogs-metric-label">总</span><span class="tlogs-metric-value">8.2B</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="今日 165,703,639 tokens"><span class="tlogs-metric-label">今日</span><span class="tlogs-metric-value">166M</span></span></span><span class="tlogs-actions"><button type="button" class="tlogs-iconbtn" aria-expanded="false" aria-label="展开 tlogs 面板" title="展开">▾</button></span></div>
-      <div class="tlogs-panel"><div class="tlogs-hint">凭据来源：本机凭据（手动填写 / 登录）</div><div class="tlogs-cards"><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">总消耗 Token</span></div><span class="tlogs-card-total" title="8,163,318,072 tokens">8.2B</span><span class="tlogs-card-split"><span>输入 <b title="8,111,339,079">8.1B</b></span><span>输出 <b title="51,978,993">52M</b></span><span>请求 <b title="51,451">51.5K</b></span></span></div><div class="tlogs-card tlogs-card-clickable" role="button" tabindex="0" title="点击切换项目"><div class="tlogs-card-head"><span class="tlogs-card-title">当前项目消耗 · tlogs</span></div><span class="tlogs-card-total" title="1,213,323,122 tokens">1.2B</span><span class="tlogs-card-split"><span>输入 <b title="1,204,882,120">1.2B</b></span><span>输出 <b title="8,441,002">8.4M</b></span><span>请求 <b title="9,820">9.8K</b></span></span></div><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">今日消耗</span></div><span class="tlogs-card-total" title="165,703,639 tokens">166M</span><span class="tlogs-card-split"><span>输入 <b title="165,304,064">165M</b></span><span>输出 <b title="399,575">400K</b></span><span>请求 <b title="533">533</b></span></span></div><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">当周消耗</span></div><span class="tlogs-card-total" title="2,462,706,917 tokens">2.5B</span><span class="tlogs-card-split"><span>输入 <b title="2,450,674,688">2.5B</b></span><span>输出 <b title="12,032,229">12M</b></span><span>请求 <b title="10,141">10.1K</b></span></span></div><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">当月消耗</span></div><span class="tlogs-card-total" title="3,300,664,529 tokens">3.3B</span><span class="tlogs-card-split"><span>输入 <b title="3,286,234,976">3.3B</b></span><span>输出 <b title="14,429,553">14.4M</b></span><span>请求 <b title="12,593">12.6K</b></span></span></div></div><div class="tlogs-footer-actions"><button type="button" class="tlogs-btn">详细数据 ›</button><span class="tlogs-actions"><button type="button" class="tlogs-btn">刷新</button><button type="button" class="tlogs-btn" title="清除本机保存的 userToken">退出登录</button></span></div></div>
+      <div class="tlogs-compact" title="tlogs — DeepSeek 用量"><span class="tlogs-metrics"><span class="tlogs-metric" title="总 8,163,318,072 tokens"><span class="tlogs-metric-label">总</span><span class="tlogs-metric-value">8.2B</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="总 ¥ ¥675.7352 元"><span class="tlogs-metric-label">总 ¥</span><span class="tlogs-metric-value tlogs-metric-money">¥675.74</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="今日 165,703,639 tokens"><span class="tlogs-metric-label">今日</span><span class="tlogs-metric-value">166M</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="请求 1,642 次请求"><span class="tlogs-metric-label">请求</span><span class="tlogs-metric-value">1.6K</span></span></span><span class="tlogs-actions"><button type="button" class="tlogs-iconbtn tlogs-refresh" aria-label="刷新用量数据" title="刷新用量">↻</button><button type="button" class="tlogs-iconbtn" aria-expanded="false" aria-label="展开 tlogs 面板" title="展开">▾</button></span></div>
+      <div class="tlogs-panel"><div class="tlogs-hint">凭据来源：本机凭据（手动填写 / 登录）</div><div class="tlogs-cards"><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">总消耗 Token</span></div><span class="tlogs-card-line"><span class="tlogs-card-total" title="8,163,318,072 tokens">8.2B</span><span class="tlogs-card-money" title="总消耗 Token 合计 ¥675.7351 元
+输入 ¥452.7425 元
+输出 ¥222.9926 元">¥675.74</span></span><span class="tlogs-card-split"><span>输入 <b title="8,111,339,079">8.1B</b></span><span>输出 <b title="51,978,993">52M</b></span><span>请求 <b title="51,451">51.5K</b></span></span></div><div class="tlogs-card tlogs-card-clickable" role="button" tabindex="0" title="点击切换项目"><div class="tlogs-card-head"><span class="tlogs-card-title">当前项目消耗 · tlogs</span></div><span class="tlogs-card-line"><span class="tlogs-card-total" title="1,213,323,122 tokens">1.2B</span></span><span class="tlogs-card-split"><span>输入 <b title="1,204,882,120">1.2B</b></span><span>输出 <b title="8,441,002">8.4M</b></span><span>请求 <b title="9,820">9.8K</b></span></span></div><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">今日消耗</span></div><span class="tlogs-card-line"><span class="tlogs-card-total" title="165,703,639 tokens">166M</span><span class="tlogs-card-money" title="今日消耗 合计 ¥12.3455 元
+输入 ¥8.2715 元
+输出 ¥4.074 元">¥12.35</span></span><span class="tlogs-card-split"><span>输入 <b title="165,304,064">165M</b></span><span>输出 <b title="399,575">400K</b></span><span>请求 <b title="533">533</b></span></span></div><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">当周消耗</span></div><span class="tlogs-card-line"><span class="tlogs-card-total" title="2,462,706,917 tokens">2.5B</span><span class="tlogs-card-money" title="当周消耗 合计 ¥132.4471 元
+输入 ¥88.7396 元
+输出 ¥43.7075 元">¥132.45</span></span><span class="tlogs-card-split"><span>输入 <b title="2,450,674,688">2.5B</b></span><span>输出 <b title="12,032,229">12M</b></span><span>请求 <b title="10,141">10.1K</b></span></span></div><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">当月消耗</span></div><span class="tlogs-card-line"><span class="tlogs-card-total" title="3,300,664,529 tokens">3.3B</span><span class="tlogs-card-money" title="当月消耗 合计 ¥186.0416 元
+输入 ¥124.6479 元
+输出 ¥61.3937 元">¥186.04</span></span><span class="tlogs-card-split"><span>输入 <b title="3,286,234,976">3.3B</b></span><span>输出 <b title="14,429,553">14.4M</b></span><span>请求 <b title="12,593">12.6K</b></span></span></div><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">近 7 天</span></div><span class="tlogs-card-line"><span class="tlogs-card-total" title="2,462,706,917 tokens">2.5B</span><span class="tlogs-card-money" title="近 7 天 合计 ¥132.4471 元
+输入 ¥88.7396 元
+输出 ¥43.7075 元">¥132.45</span></span><span class="tlogs-card-split"><span>输入 <b title="2,450,674,688">2.5B</b></span><span>输出 <b title="12,032,229">12M</b></span><span>请求 <b title="10,141">10.1K</b></span></span></div><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">近 30 天</span></div><span class="tlogs-card-line"><span class="tlogs-card-total" title="3,390,012,242 tokens">3.4B</span><span class="tlogs-card-money" title="近 30 天 合计 ¥170.7915 元
+输入 ¥114.4303 元
+输出 ¥56.3612 元">¥170.79</span></span><span class="tlogs-card-split"><span>输入 <b title="3,375,903,004">3.4B</b></span><span>输出 <b title="14,109,238">14.1M</b></span><span>请求 <b title="13,594">13.6K</b></span></span></div></div><div class="tlogs-account"><span title="平台充值余额（get_user_summary.normal_wallets）">余额 <b>¥39.42725498</b></span><span title="平台账单的累计消费（get_user_summary.total_costs），即控制台口径">官方累计消费 <b>¥677.7645829</b></span></div><div class="tlogs-footer-actions"><button type="button" class="tlogs-btn">详细数据 ›</button><span class="tlogs-actions"><button type="button" class="tlogs-btn">刷新</button><button type="button" class="tlogs-btn" title="清除本机保存的 userToken">退出登录</button></span></div></div>
     </div>
   </div>
 
@@ -405,14 +812,53 @@
     <div class="sidebar-head">侧边栏（userToken 失效）</div>
     <div class="fake-list"><i></i></div>
     <div class="sidebar-foot">
-      <div class="tlogs-panel"><div class="tlogs-notice tlogs-notice-danger"><span>userToken 已失效，需要重新登录<span class="tlogs-hint"> —— 401 认证失败（userToken 失效）</span></span><span class="tlogs-actions"><button type="button" class="tlogs-btn tlogs-btn-primary" title="打开内置登录窗口">登录</button><button type="button" class="tlogs-btn" title="手动粘贴 userToken（方案 C）">手动填写</button></span></div><div class="tlogs-cards"><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">总消耗 Token</span></div><span class="tlogs-card-total" title="8,163,318,072 tokens">8.2B</span><span class="tlogs-card-split"><span>输入 <b title="8,111,339,079">8.1B</b></span><span>输出 <b title="51,978,993">52M</b></span><span>请求 <b title="51,451">51.5K</b></span></span></div><div class="tlogs-card tlogs-card-clickable" role="button" tabindex="0" title="点击切换项目"><div class="tlogs-card-head"><span class="tlogs-card-title">当前项目消耗 · tlogs</span></div><span class="tlogs-card-total" title="1,213,323,122 tokens">1.2B</span><span class="tlogs-card-split"><span>输入 <b title="1,204,882,120">1.2B</b></span><span>输出 <b title="8,441,002">8.4M</b></span><span>请求 <b title="9,820">9.8K</b></span></span></div><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">今日消耗</span></div><span class="tlogs-card-total" title="165,703,639 tokens">166M</span><span class="tlogs-card-split"><span>输入 <b title="165,304,064">165M</b></span><span>输出 <b title="399,575">400K</b></span><span>请求 <b title="533">533</b></span></span></div><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">当周消耗</span></div><span class="tlogs-card-total" title="2,462,706,917 tokens">2.5B</span><span class="tlogs-card-split"><span>输入 <b title="2,450,674,688">2.5B</b></span><span>输出 <b title="12,032,229">12M</b></span><span>请求 <b title="10,141">10.1K</b></span></span></div><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">当月消耗</span></div><span class="tlogs-card-total" title="3,300,664,529 tokens">3.3B</span><span class="tlogs-card-split"><span>输入 <b title="3,286,234,976">3.3B</b></span><span>输出 <b title="14,429,553">14.4M</b></span><span>请求 <b title="12,593">12.6K</b></span></span></div></div><div class="tlogs-footer-actions"><button type="button" class="tlogs-btn">详细数据 ›</button><span class="tlogs-actions"><button type="button" class="tlogs-btn">刷新</button><button type="button" class="tlogs-btn" title="清除本机保存的 userToken">退出登录</button></span></div></div>
+      <div class="tlogs-panel"><div class="tlogs-notice tlogs-notice-danger"><span>userToken 已失效，需要重新登录<span class="tlogs-hint"> —— 401 认证失败（userToken 失效）</span></span><span class="tlogs-actions"><button type="button" class="tlogs-btn tlogs-btn-primary" title="打开内置登录窗口">登录</button><button type="button" class="tlogs-btn" title="手动粘贴 userToken（方案 C）">手动填写</button></span></div><div class="tlogs-cards"><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">总消耗 Token</span></div><span class="tlogs-card-line"><span class="tlogs-card-total" title="8,163,318,072 tokens">8.2B</span><span class="tlogs-card-money" title="总消耗 Token 合计 ¥675.7351 元
+输入 ¥452.7425 元
+输出 ¥222.9926 元">¥675.74</span></span><span class="tlogs-card-split"><span>输入 <b title="8,111,339,079">8.1B</b></span><span>输出 <b title="51,978,993">52M</b></span><span>请求 <b title="51,451">51.5K</b></span></span></div><div class="tlogs-card tlogs-card-clickable" role="button" tabindex="0" title="点击切换项目"><div class="tlogs-card-head"><span class="tlogs-card-title">当前项目消耗 · tlogs</span></div><span class="tlogs-card-line"><span class="tlogs-card-total" title="1,213,323,122 tokens">1.2B</span></span><span class="tlogs-card-split"><span>输入 <b title="1,204,882,120">1.2B</b></span><span>输出 <b title="8,441,002">8.4M</b></span><span>请求 <b title="9,820">9.8K</b></span></span></div><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">今日消耗</span></div><span class="tlogs-card-line"><span class="tlogs-card-total" title="165,703,639 tokens">166M</span><span class="tlogs-card-money" title="今日消耗 合计 ¥12.3455 元
+输入 ¥8.2715 元
+输出 ¥4.074 元">¥12.35</span></span><span class="tlogs-card-split"><span>输入 <b title="165,304,064">165M</b></span><span>输出 <b title="399,575">400K</b></span><span>请求 <b title="533">533</b></span></span></div><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">当周消耗</span></div><span class="tlogs-card-line"><span class="tlogs-card-total" title="2,462,706,917 tokens">2.5B</span><span class="tlogs-card-money" title="当周消耗 合计 ¥132.4471 元
+输入 ¥88.7396 元
+输出 ¥43.7075 元">¥132.45</span></span><span class="tlogs-card-split"><span>输入 <b title="2,450,674,688">2.5B</b></span><span>输出 <b title="12,032,229">12M</b></span><span>请求 <b title="10,141">10.1K</b></span></span></div><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">当月消耗</span></div><span class="tlogs-card-line"><span class="tlogs-card-total" title="3,300,664,529 tokens">3.3B</span><span class="tlogs-card-money" title="当月消耗 合计 ¥186.0416 元
+输入 ¥124.6479 元
+输出 ¥61.3937 元">¥186.04</span></span><span class="tlogs-card-split"><span>输入 <b title="3,286,234,976">3.3B</b></span><span>输出 <b title="14,429,553">14.4M</b></span><span>请求 <b title="12,593">12.6K</b></span></span></div><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">近 7 天</span></div><span class="tlogs-card-line"><span class="tlogs-card-total" title="2,462,706,917 tokens">2.5B</span><span class="tlogs-card-money" title="近 7 天 合计 ¥132.4471 元
+输入 ¥88.7396 元
+输出 ¥43.7075 元">¥132.45</span></span><span class="tlogs-card-split"><span>输入 <b title="2,450,674,688">2.5B</b></span><span>输出 <b title="12,032,229">12M</b></span><span>请求 <b title="10,141">10.1K</b></span></span></div><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">近 30 天</span></div><span class="tlogs-card-line"><span class="tlogs-card-total" title="3,390,012,242 tokens">3.4B</span><span class="tlogs-card-money" title="近 30 天 合计 ¥170.7915 元
+输入 ¥114.4303 元
+输出 ¥56.3612 元">¥170.79</span></span><span class="tlogs-card-split"><span>输入 <b title="3,375,903,004">3.4B</b></span><span>输出 <b title="14,109,238">14.1M</b></span><span>请求 <b title="13,594">13.6K</b></span></span></div></div><div class="tlogs-account"><span title="平台充值余额（get_user_summary.normal_wallets）">余额 <b>¥39.42725498</b></span><span title="平台账单的累计消费（get_user_summary.total_costs），即控制台口径">官方累计消费 <b>¥677.7645829</b></span></div><div class="tlogs-footer-actions"><button type="button" class="tlogs-btn">详细数据 ›</button><span class="tlogs-actions"><button type="button" class="tlogs-btn">刷新</button><button type="button" class="tlogs-btn" title="清除本机保存的 userToken">退出登录</button></span></div></div>
     </div>
   </div>
 
-  <h2>详细视图 <small>同一容器内切换，不新开窗口 / 不弹 Modal（需求 1.4）</small></h2>
-  <div class="sidebar" style="min-height:420px;width:300px">
-    <div class="sidebar-head">侧边栏（详细数据）</div>
-    <div class="sidebar-foot"><div class="tlogs-panel tlogs-detail"><div class="tlogs-detail-head"><button type="button" class="tlogs-btn">‹ 返回</button><button type="button" class="tlogs-btn">刷新</button></div><div class="tlogs-tabs" role="tablist"><button type="button" role="tab" aria-selected="true" class="tlogs-tab is-active">模型</button><button type="button" role="tab" aria-selected="false" class="tlogs-tab">年</button><button type="button" role="tab" aria-selected="false" class="tlogs-tab">月</button><button type="button" role="tab" aria-selected="false" class="tlogs-tab">当月按天</button></div><div class="tlogs-scroll"><table class="tlogs-table"><thead><tr><th title="按名称排序" aria-sort="none">名称</th><th title="按输入排序" aria-sort="none">输入</th><th title="按输出排序" aria-sort="none">输出</th><th title="按总 Token排序" aria-sort="descending">总 Token ↓</th><th title="按请求排序" aria-sort="none">请求</th></tr></thead><tbody><tr><td title="deepseek-flash">deepseek-flash</td><td title="8,062,474,688">8,062,474,688</td><td title="51,120,229">51,120,229</td><td title="8,113,594,917">8,113,594,917</td><td title="50,141">50,141</td></tr><tr><td title="deepseek-v4-flash-vision-exp">deepseek-v4-flash-vision-exp</td><td title="522,440,832">522,440,832</td><td title="1,492,111">1,492,111</td><td title="523,932,943">523,932,943</td><td title="1,540">1,540</td></tr><tr><td title="deepseek-v4.1-flash-expires-on-0910">deepseek-v4.1-flash-expires-on-0910</td><td title="284,130,176">284,130,176</td><td title="896,095">896,095</td><td title="285,026,271">285,026,271</td><td title="903">903</td></tr><tr><td title="deepseek-v4-flash">deepseek-v4-flash</td><td title="60,288">60,288</td><td title="9,118">9,118</td><td title="69,406">69,406</td><td title="9">9</td></tr></tbody></table></div></div></div>
+  <h2>详细数据弹窗 <small>含日历查询：点某一天看当天明细，可换月回溯；每格带当天金额</small></h2>
+  <div class="note">
+    弹窗是真正的浮层（<code>position: fixed</code> 遮罩 + 居中对话框），所以在应用里它会
+    盖住整个界面。下面的预览把它「就地化」以便内联查看：仅对预览页覆盖遮罩的定位，
+    组件本身的样式与结构不变。
+    <br>日历每格固定三行（日号 / token / ¥），并且<b>始终渲染 42 格</b> —— 无论切到哪个月，
+    弹窗高度都不会变。
+  </div>
+  <style>
+    .preview-modal .tlogs-modal-mask { position: static; padding: 0; background: none; }
+    .preview-modal .tlogs-modal { width: 720px; max-width: 100%; max-height: none; }
+  </style>
+  <div class="preview-modal"><div class="tlogs-modal-mask" role="presentation"><div class="tlogs-modal" role="dialog" aria-modal="true" aria-label="tlogs 用量详细数据"><div class="tlogs-modal-head"><span class="tlogs-modal-title">用量详细数据</span><span class="tlogs-actions"><button type="button" class="tlogs-btn">刷新</button><button type="button" class="tlogs-btn" aria-label="关闭详细数据" title="关闭（Esc）">✕</button></span></div><div class="tlogs-modal-body"><div class="tlogs-tabs" role="tablist"><button type="button" role="tab" aria-selected="true" class="tlogs-tab is-active">日历</button><button type="button" role="tab" aria-selected="false" class="tlogs-tab">图表</button><button type="button" role="tab" aria-selected="false" class="tlogs-tab">模型</button><button type="button" role="tab" aria-selected="false" class="tlogs-tab">年</button><button type="button" role="tab" aria-selected="false" class="tlogs-tab">月</button><button type="button" role="tab" aria-selected="false" class="tlogs-tab">当月按天</button></div><div class="tlogs-cal-nav"><button type="button" class="tlogs-btn" disabled="" aria-label="上一个月">‹</button><select class="tlogs-input tlogs-cal-select" aria-label="选择月份"><option value="2026-08">2026-08（1.4B tokens · ¥135.00）</option><option value="2026-09" selected="">2026-09（3.3B tokens · ¥186.04）</option></select><button type="button" class="tlogs-btn" disabled="" aria-label="下一个月">›</button></div><div class="tlogs-cal-summary"><span class="tlogs-cal-summary-title">2026-09 合计</span><span class="tlogs-metric" title="3,286,234,976"><span class="tlogs-metric-label">输入</span><span class="tlogs-metric-value">3.3B</span></span><span class="tlogs-metric" title="14,429,553"><span class="tlogs-metric-label">输出</span><span class="tlogs-metric-value">14.4M</span></span><span class="tlogs-metric" title="3,300,664,529"><span class="tlogs-metric-label">总 Token</span><span class="tlogs-metric-value">3.3B</span></span><span class="tlogs-metric" title="12,593"><span class="tlogs-metric-label">请求</span><span class="tlogs-metric-value">12.6K</span></span><span class="tlogs-metric" title="¥186.0416"><span class="tlogs-metric-label">金额</span><span class="tlogs-metric-value">¥186.04</span></span></div><div class="tlogs-cal" role="grid"><div class="tlogs-cal-head">一</div><div class="tlogs-cal-head">二</div><div class="tlogs-cal-head">三</div><div class="tlogs-cal-head">四</div><div class="tlogs-cal-head">五</div><div class="tlogs-cal-head">六</div><div class="tlogs-cal-head">日</div><div class="tlogs-cal-cell is-empty"></div><button type="button" class="tlogs-cal-cell" style="background:color-mix(in srgb, var(--tlogs-accent) 21%, transparent)" title="2026-09-01 · 137,073,094 tokens · 449 次请求 · ¥8.4302 元" data-date="2026-09-01"><span class="tlogs-cal-day">1</span><span class="tlogs-cal-val">137M</span><span class="tlogs-cal-money">¥8.43</span></button><button type="button" class="tlogs-cal-cell" title="2026-09-02 · 无数据" data-date="2026-09-02"><span class="tlogs-cal-day">2</span><span class="tlogs-cal-val">—</span><span class="tlogs-cal-money"></span></button><button type="button" class="tlogs-cal-cell" title="2026-09-03 · 无数据" data-date="2026-09-03"><span class="tlogs-cal-day">3</span><span class="tlogs-cal-val">—</span><span class="tlogs-cal-money"></span></button><button type="button" class="tlogs-cal-cell" title="2026-09-04 · 无数据" data-date="2026-09-04"><span class="tlogs-cal-day">4</span><span class="tlogs-cal-val">—</span><span class="tlogs-cal-money"></span></button><button type="button" class="tlogs-cal-cell" title="2026-09-05 · 无数据" data-date="2026-09-05"><span class="tlogs-cal-day">5</span><span class="tlogs-cal-val">—</span><span class="tlogs-cal-money"></span></button><button type="button" class="tlogs-cal-cell" title="2026-09-06 · 无数据" data-date="2026-09-06"><span class="tlogs-cal-day">6</span><span class="tlogs-cal-val">—</span><span class="tlogs-cal-money"></span></button><button type="button" class="tlogs-cal-cell" title="2026-09-07 · 无数据" data-date="2026-09-07"><span class="tlogs-cal-day">7</span><span class="tlogs-cal-val">—</span><span class="tlogs-cal-money"></span></button><button type="button" class="tlogs-cal-cell" title="2026-09-08 · 无数据" data-date="2026-09-08"><span class="tlogs-cal-day">8</span><span class="tlogs-cal-val">—</span><span class="tlogs-cal-money"></span></button><button type="button" class="tlogs-cal-cell" title="2026-09-09 · 无数据" data-date="2026-09-09"><span class="tlogs-cal-day">9</span><span class="tlogs-cal-val">—</span><span class="tlogs-cal-money"></span></button><button type="button" class="tlogs-cal-cell" title="2026-09-10 · 无数据" data-date="2026-09-10"><span class="tlogs-cal-day">10</span><span class="tlogs-cal-val">—</span><span class="tlogs-cal-money"></span></button><button type="button" class="tlogs-cal-cell" title="2026-09-11 · 无数据" data-date="2026-09-11"><span class="tlogs-cal-day">11</span><span class="tlogs-cal-val">—</span><span class="tlogs-cal-money"></span></button><button type="button" class="tlogs-cal-cell" title="2026-09-12 · 无数据" data-date="2026-09-12"><span class="tlogs-cal-day">12</span><span class="tlogs-cal-val">—</span><span class="tlogs-cal-money"></span></button><button type="button" class="tlogs-cal-cell" title="2026-09-13 · 无数据" data-date="2026-09-13"><span class="tlogs-cal-day">13</span><span class="tlogs-cal-val">—</span><span class="tlogs-cal-money"></span></button><button type="button" class="tlogs-cal-cell" title="2026-09-14 · 无数据" data-date="2026-09-14"><span class="tlogs-cal-day">14</span><span class="tlogs-cal-val">—</span><span class="tlogs-cal-money"></span></button><button type="button" class="tlogs-cal-cell" style="background:color-mix(in srgb, var(--tlogs-accent) 55%, transparent)" title="2026-09-15 · 403,122,555 tokens · 2,010 次请求 · ¥22.3415 元" data-date="2026-09-15"><span class="tlogs-cal-day">15</span><span class="tlogs-cal-val">403M</span><span class="tlogs-cal-money">¥22.34</span></button><button type="button" class="tlogs-cal-cell" title="2026-09-16 · 无数据" data-date="2026-09-16"><span class="tlogs-cal-day">16</span><span class="tlogs-cal-val">—</span><span class="tlogs-cal-money"></span></button><button type="button" class="tlogs-cal-cell" title="2026-09-17 · 无数据" data-date="2026-09-17"><span class="tlogs-cal-day">17</span><span class="tlogs-cal-val">—</span><span class="tlogs-cal-money"></span></button><button type="button" class="tlogs-cal-cell" title="2026-09-18 · 无数据" data-date="2026-09-18"><span class="tlogs-cal-day">18</span><span class="tlogs-cal-val">—</span><span class="tlogs-cal-money"></span></button><button type="button" class="tlogs-cal-cell" title="2026-09-19 · 无数据" data-date="2026-09-19"><span class="tlogs-cal-day">19</span><span class="tlogs-cal-val">—</span><span class="tlogs-cal-money"></span></button><button type="button" class="tlogs-cal-cell" title="2026-09-20 · 无数据" data-date="2026-09-20"><span class="tlogs-cal-day">20</span><span class="tlogs-cal-val">—</span><span class="tlogs-cal-money"></span></button><button type="button" class="tlogs-cal-cell" title="2026-09-21 · 无数据" data-date="2026-09-21"><span class="tlogs-cal-day">21</span><span class="tlogs-cal-val">—</span><span class="tlogs-cal-money"></span></button><button type="button" class="tlogs-cal-cell" title="2026-09-22 · 无数据" data-date="2026-09-22"><span class="tlogs-cal-day">22</span><span class="tlogs-cal-val">—</span><span class="tlogs-cal-money"></span></button><button type="button" class="tlogs-cal-cell" title="2026-09-23 · 无数据" data-date="2026-09-23"><span class="tlogs-cal-day">23</span><span class="tlogs-cal-val">—</span><span class="tlogs-cal-money"></span></button><button type="button" class="tlogs-cal-cell" title="2026-09-24 · 无数据" data-date="2026-09-24"><span class="tlogs-cal-day">24</span><span class="tlogs-cal-val">—</span><span class="tlogs-cal-money"></span></button><button type="button" class="tlogs-cal-cell" title="2026-09-25 · 无数据" data-date="2026-09-25"><span class="tlogs-cal-day">25</span><span class="tlogs-cal-val">—</span><span class="tlogs-cal-money"></span></button><button type="button" class="tlogs-cal-cell" title="2026-09-26 · 无数据" data-date="2026-09-26"><span class="tlogs-cal-day">26</span><span class="tlogs-cal-val">—</span><span class="tlogs-cal-money"></span></button><button type="button" class="tlogs-cal-cell" title="2026-09-27 · 无数据" data-date="2026-09-27"><span class="tlogs-cal-day">27</span><span class="tlogs-cal-val">—</span><span class="tlogs-cal-money"></span></button><button type="button" class="tlogs-cal-cell" title="2026-09-28 · 无数据" data-date="2026-09-28"><span class="tlogs-cal-day">28</span><span class="tlogs-cal-val">—</span><span class="tlogs-cal-money"></span></button><button type="button" class="tlogs-cal-cell" title="2026-09-29 · 无数据" data-date="2026-09-29"><span class="tlogs-cal-day">29</span><span class="tlogs-cal-val">—</span><span class="tlogs-cal-money"></span></button><button type="button" class="tlogs-cal-cell" style="background:color-mix(in srgb, var(--tlogs-accent) 1%, transparent)" title="2026-09-30 · 5,118,329 tokens · 31 次请求 · ¥0.5116 元" data-date="2026-09-30"><span class="tlogs-cal-day">30</span><span class="tlogs-cal-val">5.1M</span><span class="tlogs-cal-money">¥0.51</span></button><div class="tlogs-cal-cell is-empty"></div><div class="tlogs-cal-cell is-empty"></div><div class="tlogs-cal-cell is-empty"></div><div class="tlogs-cal-cell is-empty"></div><div class="tlogs-cal-cell is-empty"></div><div class="tlogs-cal-cell is-empty"></div><div class="tlogs-cal-cell is-empty"></div><div class="tlogs-cal-cell is-empty"></div><div class="tlogs-cal-cell is-empty"></div><div class="tlogs-cal-cell is-empty"></div><div class="tlogs-cal-cell is-empty"></div></div><div class="tlogs-cal-detail"><span class="tlogs-hint">点击日历中的某一天查看当天明细。</span></div></div></div></div></div>
+
+  <h2>图表页签 <small>折线图 + 环形饼图 + 堆叠柱状图：范围 × 数据源 × 指标 × 粒度全部联动</small></h2>
+  <div class="note">
+    三张图共享上面那排控制项：<b>范围</b>（有史以来 / 自定义 / 今日 / 本周 / 本月 / <b>近 7 天</b> / <b>近 30 天</b>）、
+    <b>数据源</b>（平台账单 / 指定项目）、<b>指标</b>（总 Token / 输入 / 输出 / 缓存命中 / 缓存未命中 / 请求数 / <b>消费金额 (¥)</b>）、
+    <b>粒度</b>（自动 / 天 / 月 / 年）与<b>口径</b>（每期新增 / 累计）。
+    悬停任一数据点会把明细显示在图表下方的固定信息条里（不做跟随鼠标的浮层，避免浮动定位与高度抖动）。
+    <br>金额指标不能走 token 的缩写格式化 —— <code>¥172.48</code> 被缩成 <code>172</code> 就与 token 数分不清了，
+    因此金额有独立的单位分支与格式化函数。
+    <br>「指定项目」的数据来自插件自身的逐日快照 —— 平台账单接口没有项目维度，因此该项无法回溯到插件启用之前。
+  </div>
+  <style>
+    .chart-preview { width: 760px; max-width: 100%; padding: 12px; border: 1px solid var(--dsw-alias-border-l4); border-radius: 10px; background: var(--dsw-alias-bg-base); }
+    .chart-preview .tlogs { font-size: 12px; }
+    .chart-preview .tlogs-modal-body { padding: 0; min-height: 0; }
+  </style>
+  <div class="chart-preview">
+    <div class="tlogs"><div class="tlogs-modal-body"><div class="tlogs-subtabs"><span class="tlogs-ctl-group" role="group" aria-label="选择图形"><span class="tlogs-ctl-label">图形</span><button type="button" class="tlogs-tab is-active" aria-pressed="true" data-kind="line">折线图</button><button type="button" class="tlogs-tab" aria-pressed="false" data-kind="pie">饼状图</button><button type="button" class="tlogs-tab" aria-pressed="false" data-kind="bar">柱状图</button></span><span class="tlogs-ctl-group"></span></div><div class="tlogs-chart-controls"><span class="tlogs-ctl-group" role="group" aria-label="时间范围"><span class="tlogs-ctl-label">范围</span><button type="button" class="tlogs-tab is-active" aria-pressed="true">有史以来</button><button type="button" class="tlogs-tab" aria-pressed="false">自定义</button><button type="button" class="tlogs-tab" aria-pressed="false">今日</button><button type="button" class="tlogs-tab" aria-pressed="false">本周</button><button type="button" class="tlogs-tab" aria-pressed="false">本月</button><button type="button" class="tlogs-tab" aria-pressed="false">近 7 天</button><button type="button" class="tlogs-tab" aria-pressed="false">近 30 天</button></span><span class="tlogs-ctl-group"><span class="tlogs-ctl-label">数据源</span><select class="tlogs-input tlogs-chart-select" aria-label="选择数据源"><option value="" selected="">平台账单（全部）</option><option value="a1b2c3d4e5f60718">tlogs</option><option value="0f1e2d3c4b5a6978">deepseek-harness</option><option value="9988776655443322">python_prj/项目日淘运费计算器</option></select></span></div><div class="tlogs-chart-controls"><span class="tlogs-ctl-group"><span class="tlogs-ctl-label">指标</span><select class="tlogs-input tlogs-chart-select" aria-label="选择指标"><option value="total" selected="">总 Token</option><option value="input">输入</option><option value="output">输出</option><option value="cacheHit">缓存命中</option><option value="cacheMiss">缓存未命中</option><option value="requests">请求数</option><option value="cost">消费金额 (¥)</option></select></span><span class="tlogs-ctl-group"><span class="tlogs-ctl-label">粒度</span><select class="tlogs-input tlogs-chart-select" aria-label="选择粒度"><option value="auto" selected="">自动</option><option value="day">按天</option><option value="month">按月</option><option value="year">按年</option></select></span><span class="tlogs-ctl-group"><span class="tlogs-ctl-label">口径</span><button type="button" class="tlogs-tab is-active" aria-pressed="true">每期新增</button><button type="button" class="tlogs-tab" aria-pressed="false">累计</button></span></div><div class="tlogs-chart-scope"><span class="tlogs-chart-scope-range">2024-04-01 ~ 2026-10-07</span><span class="tlogs-metric" title="64,654,431,691"><span class="tlogs-metric-label">区间合计</span><span class="tlogs-metric-value">64.7B</span></span><span class="tlogs-metric"><span class="tlogs-metric-label">请求</span><span class="tlogs-metric-value">354,902 次</span></span><span class="tlogs-chart-scope-note">30 个月</span></div><div class="tlogs-chart-stage"><div class="tlogs-chart-card"><div class="tlogs-chart-head"><span class="tlogs-chart-title">用量趋势<span class="tlogs-chart-sub">总 Token · 每期</span></span></div><svg class="tlogs-chart-svg" viewBox="0 0 720 220" role="img" aria-label="用量折线图"><g transform="translate(54, 10)"><line class="tlogs-grid" x1="0" x2="656" y1="186" y2="186"></line><text class="tlogs-axis-text is-y" x="-8" y="189" text-anchor="end">0</text><line class="tlogs-grid" x1="0" x2="656" y1="124" y2="124"></line><text class="tlogs-axis-text is-y" x="-8" y="127" text-anchor="end">1B</text><line class="tlogs-grid" x1="0" x2="656" y1="62" y2="62"></line><text class="tlogs-axis-text is-y" x="-8" y="65" text-anchor="end">2B</text><line class="tlogs-grid" x1="0" x2="656" y1="0" y2="0"></line><text class="tlogs-axis-text is-y" x="-8" y="3" text-anchor="end">3B</text><path class="tlogs-area" d="M0 126.84 L22.62 109.25 L45.24 95.87 L67.86 89.5 L90.48 90.59 L113.1 97.06 L135.72 105.04 L158.34 110.16 L180.97 108.98 L203.59 100.21 L226.21 85.09 L248.83 67.01 L271.45 50.35 L294.07 39 L316.69 35.09 L339.31 38.22 L361.93 45.65 L384.55 53.18 L407.17 56.57 L429.79 53 L452.41 41.95 L475.03 25.45 L497.66 7.34 L520.28 -7.99 L542.9 -17.09 L565.52 -18.59 L588.14 -13.7 L610.76 -5.75 L633.38 0.88 L656 2.26 L656 186 L0 186 Z"></path><path class="tlogs-line" d="M0 126.84 L22.62 109.25 L45.24 95.87 L67.86 89.5 L90.48 90.59 L113.1 97.06 L135.72 105.04 L158.34 110.16 L180.97 108.98 L203.59 100.21 L226.21 85.09 L248.83 67.01 L271.45 50.35 L294.07 39 L316.69 35.09 L339.31 38.22 L361.93 45.65 L384.55 53.18 L407.17 56.57 L429.79 53 L452.41 41.95 L475.03 25.45 L497.66 7.34 L520.28 -7.99 L542.9 -17.09 L565.52 -18.59 L588.14 -13.7 L610.76 -5.75 L633.38 0.88 L656 2.26"></path><rect class="tlogs-hit" x="0" width="11.31" y="0" height="186" data-key="2024-04"></rect><rect class="tlogs-hit" x="11.31" width="22.619999999999997" y="0" height="186" data-key="2024-05"></rect><rect class="tlogs-hit" x="33.93" width="22.619999999999997" y="0" height="186" data-key="2024-06"></rect><rect class="tlogs-hit" x="56.55" width="22.620000000000005" y="0" height="186" data-key="2024-07"></rect><rect class="tlogs-hit" x="79.17" width="22.61999999999999" y="0" height="186" data-key="2024-08"></rect><rect class="tlogs-hit" x="101.78999999999999" width="22.620000000000005" y="0" height="186" data-key="2024-09"></rect><rect class="tlogs-hit" x="124.41" width="22.620000000000005" y="0" height="186" data-key="2024-10"></rect><rect class="tlogs-hit" x="147.03" width="22.625" y="0" height="186" data-key="2024-11"></rect><rect class="tlogs-hit" x="169.655" width="22.625" y="0" height="186" data-key="2024-12"></rect><rect class="tlogs-hit" x="192.28" width="22.620000000000005" y="0" height="186" data-key="2025-01"></rect><rect class="tlogs-hit" x="214.9" width="22.620000000000005" y="0" height="186" data-key="2025-02"></rect><rect class="tlogs-hit" x="237.52" width="22.619999999999976" y="0" height="186" data-key="2025-03"></rect><rect class="tlogs-hit" x="260.14" width="22.620000000000005" y="0" height="186" data-key="2025-04"></rect><rect class="tlogs-hit" x="282.76" width="22.620000000000005" y="0" height="186" data-key="2025-05"></rect><rect class="tlogs-hit" x="305.38" width="22.620000000000005" y="0" height="186" data-key="2025-06"></rect><rect class="tlogs-hit" x="328" width="22.620000000000005" y="0" height="186" data-key="2025-07"></rect><rect class="tlogs-hit" x="350.62" width="22.620000000000005" y="0" height="186" data-key="2025-08"></rect><rect class="tlogs-hit" x="373.24" width="22.620000000000005" y="0" height="186" data-key="2025-09"></rect><rect class="tlogs-hit" x="395.86" width="22.620000000000005" y="0" height="186" data-key="2025-10"></rect><rect class="tlogs-hit" x="418.48" width="22.620000000000005" y="0" height="186" data-key="2025-11"></rect><rect class="tlogs-hit" x="441.1" width="22.620000000000005" y="0" height="186" data-key="2025-12"></rect><rect class="tlogs-hit" x="463.72" width="22.625" y="0" height="186" data-key="2026-01"></rect><rect class="tlogs-hit" x="486.345" width="22.625" y="0" height="186" data-key="2026-02"></rect><rect class="tlogs-hit" x="508.97" width="22.61999999999989" y="0" height="186" data-key="2026-03"></rect><rect class="tlogs-hit" x="531.5899999999999" width="22.62000000000012" y="0" height="186" data-key="2026-04"></rect><rect class="tlogs-hit" x="554.21" width="22.61999999999989" y="0" height="186" data-key="2026-05"></rect><rect class="tlogs-hit" x="576.8299999999999" width="22.62000000000012" y="0" height="186" data-key="2026-06"></rect><rect class="tlogs-hit" x="599.45" width="22.61999999999989" y="0" height="186" data-key="2026-07"></rect><rect class="tlogs-hit" x="622.0699999999999" width="22.62000000000012" y="0" height="186" data-key="2026-08"></rect><rect class="tlogs-hit" x="644.69" width="11.309999999999945" y="0" height="186" data-key="2026-09"></rect><text class="tlogs-axis-text" x="0" y="201" text-anchor="middle">24-04</text><text class="tlogs-axis-text" x="113.1" y="201" text-anchor="middle">24-09</text><text class="tlogs-axis-text" x="226.21" y="201" text-anchor="middle">25-02</text><text class="tlogs-axis-text" x="339.31" y="201" text-anchor="middle">25-07</text><text class="tlogs-axis-text" x="452.41" y="201" text-anchor="middle">25-12</text><text class="tlogs-axis-text" x="565.52" y="201" text-anchor="middle">26-05</text><text class="tlogs-axis-text" x="656" y="201" text-anchor="middle">26-09</text></g></svg><div class="tlogs-chart-summary"><span class="tlogs-metric" title="64,654,431,691"><span class="tlogs-metric-label">合计</span><span class="tlogs-metric-value">64.7B</span></span><span class="tlogs-metric" title="3,299,873,936"><span class="tlogs-metric-label">最高</span><span class="tlogs-metric-value">3.3B</span></span><span class="tlogs-metric" title="954,250,000"><span class="tlogs-metric-label">最低</span><span class="tlogs-metric-value">954M</span></span><span class="tlogs-metric" title="2,155,147,723"><span class="tlogs-metric-label">均值</span><span class="tlogs-metric-value">2.2B</span></span></div><div class="tlogs-chart-info is-hint">悬停折线查看该时间点的明细。</div></div></div></div></div>
   </div>
 
   <h2>深色主题 <small>同一份组件与样式，仅主题 token 不同</small></h2>
@@ -420,26 +866,49 @@
     <div class="frame" data-ds-dark-theme style="background:#0d1117">
       <div class="cap">紧凑条 + 展开面板（深色）</div>
       <div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:6px">
-        <div class="tlogs-compact" title="tlogs — DeepSeek 用量"><span class="tlogs-metrics"><span class="tlogs-metric" title="总 8,163,318,072 tokens"><span class="tlogs-metric-label">总</span><span class="tlogs-metric-value">8.2B</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="今日 165,703,639 tokens"><span class="tlogs-metric-label">今日</span><span class="tlogs-metric-value">166M</span></span></span><span class="tlogs-actions"><button type="button" class="tlogs-iconbtn" aria-expanded="false" aria-label="展开 tlogs 面板" title="展开">▾</button></span></div>
-        <div class="tlogs-panel"><div class="tlogs-hint">凭据来源：本机凭据（手动填写 / 登录）</div><div class="tlogs-cards"><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">总消耗 Token</span></div><span class="tlogs-card-total" title="8,163,318,072 tokens">8.2B</span><span class="tlogs-card-split"><span>输入 <b title="8,111,339,079">8.1B</b></span><span>输出 <b title="51,978,993">52M</b></span><span>请求 <b title="51,451">51.5K</b></span></span></div><div class="tlogs-card tlogs-card-clickable" role="button" tabindex="0" title="点击切换项目"><div class="tlogs-card-head"><span class="tlogs-card-title">当前项目消耗 · tlogs</span></div><span class="tlogs-card-total" title="1,213,323,122 tokens">1.2B</span><span class="tlogs-card-split"><span>输入 <b title="1,204,882,120">1.2B</b></span><span>输出 <b title="8,441,002">8.4M</b></span><span>请求 <b title="9,820">9.8K</b></span></span></div><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">今日消耗</span></div><span class="tlogs-card-total" title="165,703,639 tokens">166M</span><span class="tlogs-card-split"><span>输入 <b title="165,304,064">165M</b></span><span>输出 <b title="399,575">400K</b></span><span>请求 <b title="533">533</b></span></span></div><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">当周消耗</span></div><span class="tlogs-card-total" title="2,462,706,917 tokens">2.5B</span><span class="tlogs-card-split"><span>输入 <b title="2,450,674,688">2.5B</b></span><span>输出 <b title="12,032,229">12M</b></span><span>请求 <b title="10,141">10.1K</b></span></span></div><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">当月消耗</span></div><span class="tlogs-card-total" title="3,300,664,529 tokens">3.3B</span><span class="tlogs-card-split"><span>输入 <b title="3,286,234,976">3.3B</b></span><span>输出 <b title="14,429,553">14.4M</b></span><span>请求 <b title="12,593">12.6K</b></span></span></div></div><div class="tlogs-footer-actions"><button type="button" class="tlogs-btn">详细数据 ›</button><span class="tlogs-actions"><button type="button" class="tlogs-btn">刷新</button><button type="button" class="tlogs-btn" title="清除本机保存的 userToken">退出登录</button></span></div></div>
+        <div class="tlogs-compact" title="tlogs — DeepSeek 用量"><span class="tlogs-metrics"><span class="tlogs-metric" title="总 8,163,318,072 tokens"><span class="tlogs-metric-label">总</span><span class="tlogs-metric-value">8.2B</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="总 ¥ ¥675.7352 元"><span class="tlogs-metric-label">总 ¥</span><span class="tlogs-metric-value tlogs-metric-money">¥675.74</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="今日 165,703,639 tokens"><span class="tlogs-metric-label">今日</span><span class="tlogs-metric-value">166M</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="请求 1,642 次请求"><span class="tlogs-metric-label">请求</span><span class="tlogs-metric-value">1.6K</span></span></span><span class="tlogs-actions"><button type="button" class="tlogs-iconbtn tlogs-refresh" aria-label="刷新用量数据" title="刷新用量">↻</button><button type="button" class="tlogs-iconbtn" aria-expanded="false" aria-label="展开 tlogs 面板" title="展开">▾</button></span></div>
+        <div class="tlogs-panel"><div class="tlogs-hint">凭据来源：本机凭据（手动填写 / 登录）</div><div class="tlogs-cards"><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">总消耗 Token</span></div><span class="tlogs-card-line"><span class="tlogs-card-total" title="8,163,318,072 tokens">8.2B</span><span class="tlogs-card-money" title="总消耗 Token 合计 ¥675.7351 元
+输入 ¥452.7425 元
+输出 ¥222.9926 元">¥675.74</span></span><span class="tlogs-card-split"><span>输入 <b title="8,111,339,079">8.1B</b></span><span>输出 <b title="51,978,993">52M</b></span><span>请求 <b title="51,451">51.5K</b></span></span></div><div class="tlogs-card tlogs-card-clickable" role="button" tabindex="0" title="点击切换项目"><div class="tlogs-card-head"><span class="tlogs-card-title">当前项目消耗 · tlogs</span></div><span class="tlogs-card-line"><span class="tlogs-card-total" title="1,213,323,122 tokens">1.2B</span></span><span class="tlogs-card-split"><span>输入 <b title="1,204,882,120">1.2B</b></span><span>输出 <b title="8,441,002">8.4M</b></span><span>请求 <b title="9,820">9.8K</b></span></span></div><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">今日消耗</span></div><span class="tlogs-card-line"><span class="tlogs-card-total" title="165,703,639 tokens">166M</span><span class="tlogs-card-money" title="今日消耗 合计 ¥12.3455 元
+输入 ¥8.2715 元
+输出 ¥4.074 元">¥12.35</span></span><span class="tlogs-card-split"><span>输入 <b title="165,304,064">165M</b></span><span>输出 <b title="399,575">400K</b></span><span>请求 <b title="533">533</b></span></span></div><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">当周消耗</span></div><span class="tlogs-card-line"><span class="tlogs-card-total" title="2,462,706,917 tokens">2.5B</span><span class="tlogs-card-money" title="当周消耗 合计 ¥132.4471 元
+输入 ¥88.7396 元
+输出 ¥43.7075 元">¥132.45</span></span><span class="tlogs-card-split"><span>输入 <b title="2,450,674,688">2.5B</b></span><span>输出 <b title="12,032,229">12M</b></span><span>请求 <b title="10,141">10.1K</b></span></span></div><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">当月消耗</span></div><span class="tlogs-card-line"><span class="tlogs-card-total" title="3,300,664,529 tokens">3.3B</span><span class="tlogs-card-money" title="当月消耗 合计 ¥186.0416 元
+输入 ¥124.6479 元
+输出 ¥61.3937 元">¥186.04</span></span><span class="tlogs-card-split"><span>输入 <b title="3,286,234,976">3.3B</b></span><span>输出 <b title="14,429,553">14.4M</b></span><span>请求 <b title="12,593">12.6K</b></span></span></div><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">近 7 天</span></div><span class="tlogs-card-line"><span class="tlogs-card-total" title="2,462,706,917 tokens">2.5B</span><span class="tlogs-card-money" title="近 7 天 合计 ¥132.4471 元
+输入 ¥88.7396 元
+输出 ¥43.7075 元">¥132.45</span></span><span class="tlogs-card-split"><span>输入 <b title="2,450,674,688">2.5B</b></span><span>输出 <b title="12,032,229">12M</b></span><span>请求 <b title="10,141">10.1K</b></span></span></div><div class="tlogs-card"><div class="tlogs-card-head"><span class="tlogs-card-title">近 30 天</span></div><span class="tlogs-card-line"><span class="tlogs-card-total" title="3,390,012,242 tokens">3.4B</span><span class="tlogs-card-money" title="近 30 天 合计 ¥170.7915 元
+输入 ¥114.4303 元
+输出 ¥56.3612 元">¥170.79</span></span><span class="tlogs-card-split"><span>输入 <b title="3,375,903,004">3.4B</b></span><span>输出 <b title="14,109,238">14.1M</b></span><span>请求 <b title="13,594">13.6K</b></span></span></div></div><div class="tlogs-account"><span title="平台充值余额（get_user_summary.normal_wallets）">余额 <b>¥39.42725498</b></span><span title="平台账单的累计消费（get_user_summary.total_costs），即控制台口径">官方累计消费 <b>¥677.7645829</b></span></div><div class="tlogs-footer-actions"><button type="button" class="tlogs-btn">详细数据 ›</button><span class="tlogs-actions"><button type="button" class="tlogs-btn">刷新</button><button type="button" class="tlogs-btn" title="清除本机保存的 userToken">退出登录</button></span></div></div>
       </div>
     </div>
   </div>
-
-  <h2>宽度退化 <small>即使把 4 项指标都配回来，数字也不该被裁掉</small></h2>
   <div class="note">
-    默认只放「总 + 今日」，因此正常宽度下绰绰有余。下面刻意把 4 项都放回来，
-    在最窄的侧边栏里验证：数字不可压缩、只有标签会让位 —— 若你看到数字自身被截断，
-    说明这个回归又回来了。
+    图表在深色下的可读性单看一份：折线/面积、堆叠柱与图例的前三色都是中间明度的固定色，
+    不依赖宿主语义 token，因此浅深两套主题下都成立。
+  </div>
+  <div class="row">
+    <div class="frame chart-preview" data-ds-dark-theme style="background:#0d1117">
+      <div class="cap">图表页签（深色）</div>
+      <div class="tlogs"><div class="tlogs-modal-body"><div class="tlogs-subtabs"><span class="tlogs-ctl-group" role="group" aria-label="选择图形"><span class="tlogs-ctl-label">图形</span><button type="button" class="tlogs-tab is-active" aria-pressed="true" data-kind="line">折线图</button><button type="button" class="tlogs-tab" aria-pressed="false" data-kind="pie">饼状图</button><button type="button" class="tlogs-tab" aria-pressed="false" data-kind="bar">柱状图</button></span><span class="tlogs-ctl-group"></span></div><div class="tlogs-chart-controls"><span class="tlogs-ctl-group" role="group" aria-label="时间范围"><span class="tlogs-ctl-label">范围</span><button type="button" class="tlogs-tab is-active" aria-pressed="true">有史以来</button><button type="button" class="tlogs-tab" aria-pressed="false">自定义</button><button type="button" class="tlogs-tab" aria-pressed="false">今日</button><button type="button" class="tlogs-tab" aria-pressed="false">本周</button><button type="button" class="tlogs-tab" aria-pressed="false">本月</button><button type="button" class="tlogs-tab" aria-pressed="false">近 7 天</button><button type="button" class="tlogs-tab" aria-pressed="false">近 30 天</button></span><span class="tlogs-ctl-group"><span class="tlogs-ctl-label">数据源</span><select class="tlogs-input tlogs-chart-select" aria-label="选择数据源"><option value="" selected="">平台账单（全部）</option><option value="a1b2c3d4e5f60718">tlogs</option><option value="0f1e2d3c4b5a6978">deepseek-harness</option><option value="9988776655443322">python_prj/项目日淘运费计算器</option></select></span></div><div class="tlogs-chart-controls"><span class="tlogs-ctl-group"><span class="tlogs-ctl-label">指标</span><select class="tlogs-input tlogs-chart-select" aria-label="选择指标"><option value="total" selected="">总 Token</option><option value="input">输入</option><option value="output">输出</option><option value="cacheHit">缓存命中</option><option value="cacheMiss">缓存未命中</option><option value="requests">请求数</option><option value="cost">消费金额 (¥)</option></select></span><span class="tlogs-ctl-group"><span class="tlogs-ctl-label">粒度</span><select class="tlogs-input tlogs-chart-select" aria-label="选择粒度"><option value="auto" selected="">自动</option><option value="day">按天</option><option value="month">按月</option><option value="year">按年</option></select></span><span class="tlogs-ctl-group"><span class="tlogs-ctl-label">口径</span><button type="button" class="tlogs-tab is-active" aria-pressed="true">每期新增</button><button type="button" class="tlogs-tab" aria-pressed="false">累计</button></span></div><div class="tlogs-chart-scope"><span class="tlogs-chart-scope-range">2024-04-01 ~ 2026-10-07</span><span class="tlogs-metric" title="64,654,431,691"><span class="tlogs-metric-label">区间合计</span><span class="tlogs-metric-value">64.7B</span></span><span class="tlogs-metric"><span class="tlogs-metric-label">请求</span><span class="tlogs-metric-value">354,902 次</span></span><span class="tlogs-chart-scope-note">30 个月</span></div><div class="tlogs-chart-stage"><div class="tlogs-chart-card"><div class="tlogs-chart-head"><span class="tlogs-chart-title">用量趋势<span class="tlogs-chart-sub">总 Token · 每期</span></span></div><svg class="tlogs-chart-svg" viewBox="0 0 720 220" role="img" aria-label="用量折线图"><g transform="translate(54, 10)"><line class="tlogs-grid" x1="0" x2="656" y1="186" y2="186"></line><text class="tlogs-axis-text is-y" x="-8" y="189" text-anchor="end">0</text><line class="tlogs-grid" x1="0" x2="656" y1="124" y2="124"></line><text class="tlogs-axis-text is-y" x="-8" y="127" text-anchor="end">1B</text><line class="tlogs-grid" x1="0" x2="656" y1="62" y2="62"></line><text class="tlogs-axis-text is-y" x="-8" y="65" text-anchor="end">2B</text><line class="tlogs-grid" x1="0" x2="656" y1="0" y2="0"></line><text class="tlogs-axis-text is-y" x="-8" y="3" text-anchor="end">3B</text><path class="tlogs-area" d="M0 126.84 L22.62 109.25 L45.24 95.87 L67.86 89.5 L90.48 90.59 L113.1 97.06 L135.72 105.04 L158.34 110.16 L180.97 108.98 L203.59 100.21 L226.21 85.09 L248.83 67.01 L271.45 50.35 L294.07 39 L316.69 35.09 L339.31 38.22 L361.93 45.65 L384.55 53.18 L407.17 56.57 L429.79 53 L452.41 41.95 L475.03 25.45 L497.66 7.34 L520.28 -7.99 L542.9 -17.09 L565.52 -18.59 L588.14 -13.7 L610.76 -5.75 L633.38 0.88 L656 2.26 L656 186 L0 186 Z"></path><path class="tlogs-line" d="M0 126.84 L22.62 109.25 L45.24 95.87 L67.86 89.5 L90.48 90.59 L113.1 97.06 L135.72 105.04 L158.34 110.16 L180.97 108.98 L203.59 100.21 L226.21 85.09 L248.83 67.01 L271.45 50.35 L294.07 39 L316.69 35.09 L339.31 38.22 L361.93 45.65 L384.55 53.18 L407.17 56.57 L429.79 53 L452.41 41.95 L475.03 25.45 L497.66 7.34 L520.28 -7.99 L542.9 -17.09 L565.52 -18.59 L588.14 -13.7 L610.76 -5.75 L633.38 0.88 L656 2.26"></path><rect class="tlogs-hit" x="0" width="11.31" y="0" height="186" data-key="2024-04"></rect><rect class="tlogs-hit" x="11.31" width="22.619999999999997" y="0" height="186" data-key="2024-05"></rect><rect class="tlogs-hit" x="33.93" width="22.619999999999997" y="0" height="186" data-key="2024-06"></rect><rect class="tlogs-hit" x="56.55" width="22.620000000000005" y="0" height="186" data-key="2024-07"></rect><rect class="tlogs-hit" x="79.17" width="22.61999999999999" y="0" height="186" data-key="2024-08"></rect><rect class="tlogs-hit" x="101.78999999999999" width="22.620000000000005" y="0" height="186" data-key="2024-09"></rect><rect class="tlogs-hit" x="124.41" width="22.620000000000005" y="0" height="186" data-key="2024-10"></rect><rect class="tlogs-hit" x="147.03" width="22.625" y="0" height="186" data-key="2024-11"></rect><rect class="tlogs-hit" x="169.655" width="22.625" y="0" height="186" data-key="2024-12"></rect><rect class="tlogs-hit" x="192.28" width="22.620000000000005" y="0" height="186" data-key="2025-01"></rect><rect class="tlogs-hit" x="214.9" width="22.620000000000005" y="0" height="186" data-key="2025-02"></rect><rect class="tlogs-hit" x="237.52" width="22.619999999999976" y="0" height="186" data-key="2025-03"></rect><rect class="tlogs-hit" x="260.14" width="22.620000000000005" y="0" height="186" data-key="2025-04"></rect><rect class="tlogs-hit" x="282.76" width="22.620000000000005" y="0" height="186" data-key="2025-05"></rect><rect class="tlogs-hit" x="305.38" width="22.620000000000005" y="0" height="186" data-key="2025-06"></rect><rect class="tlogs-hit" x="328" width="22.620000000000005" y="0" height="186" data-key="2025-07"></rect><rect class="tlogs-hit" x="350.62" width="22.620000000000005" y="0" height="186" data-key="2025-08"></rect><rect class="tlogs-hit" x="373.24" width="22.620000000000005" y="0" height="186" data-key="2025-09"></rect><rect class="tlogs-hit" x="395.86" width="22.620000000000005" y="0" height="186" data-key="2025-10"></rect><rect class="tlogs-hit" x="418.48" width="22.620000000000005" y="0" height="186" data-key="2025-11"></rect><rect class="tlogs-hit" x="441.1" width="22.620000000000005" y="0" height="186" data-key="2025-12"></rect><rect class="tlogs-hit" x="463.72" width="22.625" y="0" height="186" data-key="2026-01"></rect><rect class="tlogs-hit" x="486.345" width="22.625" y="0" height="186" data-key="2026-02"></rect><rect class="tlogs-hit" x="508.97" width="22.61999999999989" y="0" height="186" data-key="2026-03"></rect><rect class="tlogs-hit" x="531.5899999999999" width="22.62000000000012" y="0" height="186" data-key="2026-04"></rect><rect class="tlogs-hit" x="554.21" width="22.61999999999989" y="0" height="186" data-key="2026-05"></rect><rect class="tlogs-hit" x="576.8299999999999" width="22.62000000000012" y="0" height="186" data-key="2026-06"></rect><rect class="tlogs-hit" x="599.45" width="22.61999999999989" y="0" height="186" data-key="2026-07"></rect><rect class="tlogs-hit" x="622.0699999999999" width="22.62000000000012" y="0" height="186" data-key="2026-08"></rect><rect class="tlogs-hit" x="644.69" width="11.309999999999945" y="0" height="186" data-key="2026-09"></rect><text class="tlogs-axis-text" x="0" y="201" text-anchor="middle">24-04</text><text class="tlogs-axis-text" x="113.1" y="201" text-anchor="middle">24-09</text><text class="tlogs-axis-text" x="226.21" y="201" text-anchor="middle">25-02</text><text class="tlogs-axis-text" x="339.31" y="201" text-anchor="middle">25-07</text><text class="tlogs-axis-text" x="452.41" y="201" text-anchor="middle">25-12</text><text class="tlogs-axis-text" x="565.52" y="201" text-anchor="middle">26-05</text><text class="tlogs-axis-text" x="656" y="201" text-anchor="middle">26-09</text></g></svg><div class="tlogs-chart-summary"><span class="tlogs-metric" title="64,654,431,691"><span class="tlogs-metric-label">合计</span><span class="tlogs-metric-value">64.7B</span></span><span class="tlogs-metric" title="3,299,873,936"><span class="tlogs-metric-label">最高</span><span class="tlogs-metric-value">3.3B</span></span><span class="tlogs-metric" title="954,250,000"><span class="tlogs-metric-label">最低</span><span class="tlogs-metric-value">954M</span></span><span class="tlogs-metric" title="2,155,147,723"><span class="tlogs-metric-label">均值</span><span class="tlogs-metric-value">2.2B</span></span></div><div class="tlogs-chart-info is-hint">悬停折线查看该时间点的明细。</div></div></div></div></div>
+    </div>
+  </div>
+
+  <h2>宽度退化 <small>即使把 8 项指标都配回来，数字也不该被裁掉</small></h2>
+  <div class="note">
+    默认放「总 · 总 ¥ · 今日 · 今日请求数」，因此正常宽度下绰绰有余。下面刻意把全部 8 项
+    都放回来，在最窄的侧边栏里验证：数字不可压缩、只有标签会让位 —— 若你看到数字自身被截断，
+    说明这个回归又回来了。金额项同理：<code>flex: 0 0 auto</code>，宁可让标签省略也不把
+    <code>¥675.74</code> 压成 <code>¥1…</code>。
   </div>
   <div class="row">
     <div class="sidebar" style="width:268px;min-height:110px">
       <div class="sidebar-head">268px · 4 项指标</div>
-      <div class="sidebar-foot"><div class="tlogs-compact" title="tlogs — DeepSeek 用量"><span class="tlogs-metrics"><span class="tlogs-metric" title="总 8,163,318,072 tokens"><span class="tlogs-metric-label">总</span><span class="tlogs-metric-value">8.2B</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="今日 165,703,639 tokens"><span class="tlogs-metric-label">今日</span><span class="tlogs-metric-value">166M</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="本周 2,462,706,917 tokens"><span class="tlogs-metric-label">本周</span><span class="tlogs-metric-value">2.5B</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="本月 3,300,664,529 tokens"><span class="tlogs-metric-label">本月</span><span class="tlogs-metric-value">3.3B</span></span></span><span class="tlogs-actions"><button type="button" class="tlogs-iconbtn" aria-expanded="false" aria-label="展开 tlogs 面板" title="展开">▾</button></span></div></div>
+      <div class="sidebar-foot"><div class="tlogs-compact" title="tlogs — DeepSeek 用量"><span class="tlogs-metrics"><span class="tlogs-metric" title="总 8,163,318,072 tokens"><span class="tlogs-metric-label">总</span><span class="tlogs-metric-value">8.2B</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="总 ¥ ¥675.7352 元"><span class="tlogs-metric-label">总 ¥</span><span class="tlogs-metric-value tlogs-metric-money">¥675.74</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="今日 165,703,639 tokens"><span class="tlogs-metric-label">今日</span><span class="tlogs-metric-value">166M</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="请求 1,642 次请求"><span class="tlogs-metric-label">请求</span><span class="tlogs-metric-value">1.6K</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="本周 2,462,706,917 tokens"><span class="tlogs-metric-label">本周</span><span class="tlogs-metric-value">2.5B</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="本月 3,300,664,529 tokens"><span class="tlogs-metric-label">本月</span><span class="tlogs-metric-value">3.3B</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="近 7 天 2,462,706,917 tokens"><span class="tlogs-metric-label">近 7 天</span><span class="tlogs-metric-value">2.5B</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="近 30 天 3,375,903,004 tokens"><span class="tlogs-metric-label">近 30 天</span><span class="tlogs-metric-value">3.4B</span></span></span><span class="tlogs-actions"><button type="button" class="tlogs-iconbtn tlogs-refresh" aria-label="刷新用量数据" title="刷新用量">↻</button><button type="button" class="tlogs-iconbtn" aria-expanded="false" aria-label="展开 tlogs 面板" title="展开">▾</button></span></div></div>
     </div>
     <div class="sidebar" style="width:180px;min-height:110px">
       <div class="sidebar-head">180px · 4 项指标（极窄）</div>
-      <div class="sidebar-foot"><div class="tlogs-compact" title="tlogs — DeepSeek 用量"><span class="tlogs-metrics"><span class="tlogs-metric" title="总 8,163,318,072 tokens"><span class="tlogs-metric-label">总</span><span class="tlogs-metric-value">8.2B</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="今日 165,703,639 tokens"><span class="tlogs-metric-label">今日</span><span class="tlogs-metric-value">166M</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="本周 2,462,706,917 tokens"><span class="tlogs-metric-label">本周</span><span class="tlogs-metric-value">2.5B</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="本月 3,300,664,529 tokens"><span class="tlogs-metric-label">本月</span><span class="tlogs-metric-value">3.3B</span></span></span><span class="tlogs-actions"><button type="button" class="tlogs-iconbtn" aria-expanded="false" aria-label="展开 tlogs 面板" title="展开">▾</button></span></div></div>
+      <div class="sidebar-foot"><div class="tlogs-compact" title="tlogs — DeepSeek 用量"><span class="tlogs-metrics"><span class="tlogs-metric" title="总 8,163,318,072 tokens"><span class="tlogs-metric-label">总</span><span class="tlogs-metric-value">8.2B</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="总 ¥ ¥675.7352 元"><span class="tlogs-metric-label">总 ¥</span><span class="tlogs-metric-value tlogs-metric-money">¥675.74</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="今日 165,703,639 tokens"><span class="tlogs-metric-label">今日</span><span class="tlogs-metric-value">166M</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="请求 1,642 次请求"><span class="tlogs-metric-label">请求</span><span class="tlogs-metric-value">1.6K</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="本周 2,462,706,917 tokens"><span class="tlogs-metric-label">本周</span><span class="tlogs-metric-value">2.5B</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="本月 3,300,664,529 tokens"><span class="tlogs-metric-label">本月</span><span class="tlogs-metric-value">3.3B</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="近 7 天 2,462,706,917 tokens"><span class="tlogs-metric-label">近 7 天</span><span class="tlogs-metric-value">2.5B</span></span><span class="tlogs-sep">·</span><span class="tlogs-metric" title="近 30 天 3,375,903,004 tokens"><span class="tlogs-metric-label">近 30 天</span><span class="tlogs-metric-value">3.4B</span></span></span><span class="tlogs-actions"><button type="button" class="tlogs-iconbtn tlogs-refresh" aria-label="刷新用量数据" title="刷新用量">↻</button><button type="button" class="tlogs-iconbtn" aria-expanded="false" aria-label="展开 tlogs 面板" title="展开">▾</button></span></div></div>
     </div>
   </div>
 

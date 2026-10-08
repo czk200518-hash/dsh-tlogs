@@ -11,10 +11,28 @@
  *  - 必须携带 Origin / Referer / x-client-platform，否则被 WAF 拦截或返回空数据
  */
 
-import type { BizData, CredentialScheme, FetchResult, UsageError, UsageErrorKind } from '../types.js'
+import { unwrapBizData } from './parser.js'
+import type {
+  AccountSummary,
+  BizData,
+  CredentialScheme,
+  FetchResult,
+  UsageError,
+  UsageErrorKind,
+} from '../types.js'
 
 export const BASE_URL = 'https://platform.deepseek.com/api/v0' // py:32
 export const USAGE_PATH = '/usage/amount' // py:63
+/**
+ * 金额接口。与 `USAGE_PATH` 是**孪生**关系：入参相同（year/month），返回结构同构
+ * （`total[]` + `days[]`），只是 `amount` 字段的含义从 token 数变成 CNY 金额。
+ *
+ * 实测差异：`/usage/amount` 的 `biz_data` 是**对象**，`/usage/cost` 的是
+ * **长度 1 的数组**（多一个 `currency: "CNY"`）。已由 `unwrapBizData` 抹平。
+ */
+export const COST_PATH = '/usage/cost'
+/** 账户概览（余额 / 赠送余额 / 官方累计消费）。 */
+export const ACCOUNT_SUMMARY_PATH = '/users/get_user_summary'
 
 /** 单次请求超时，对应 Python `requests.get(..., timeout=30)`（py:67）。 */
 export const DEFAULT_TIMEOUT_MS = 30_000
@@ -133,9 +151,13 @@ export function buildHeaders(
 }
 
 /** 构造请求 URL，等价于 `f"{BASE_URL}/usage/amount"` + `params={"year","month"}`。 */
-export function buildUrl(year: number, month: number): string {
-  return `${BASE_URL}${USAGE_PATH}?year=${encodeURIComponent(String(year))}&month=${encodeURIComponent(String(month))}`
+export function buildUrl(year: number, month: number, kind: UsageKind = 'amount'): string {
+  const path = kind === 'cost' ? COST_PATH : USAGE_PATH
+  return `${BASE_URL}${path}?year=${encodeURIComponent(String(year))}&month=${encodeURIComponent(String(month))}`
 }
+
+/** 走哪个月度接口：token 用量还是金额。 */
+export type UsageKind = 'amount' | 'cost'
 
 /** 构造结构化错误。 */
 function err(kind: UsageErrorKind, message: string, status?: number): { ok: false; error: UsageError } {
@@ -146,6 +168,8 @@ export interface FetchMonthOptions {
   token: string
   year: number
   month: number
+  /** 走哪个接口：`amount`（token，默认）或 `cost`（金额 CNY）。 */
+  kind?: UsageKind
   /** 外部取消信号（DSH 工具调用会传入）。 */
   signal?: AbortSignal
   /** 便于测试替换的 fetch 实现。 */
@@ -157,35 +181,51 @@ export interface FetchMonthOptions {
   scheme?: CredentialScheme
 }
 
-/**
- * 拉取某月用量。等价于 Python `fetch_month(year, month) -> (biz_data, error_msg)`。
- *
- * 返回判别式联合而非 Python 的 `(data, err)` 二元组：`err` 为空串在 Python 里是
- * 假值，用联合类型表达同一语义可以避免「空错误串被当成失败」这类隐式 bug。
- */
-export async function fetchMonth(opts: FetchMonthOptions): Promise<FetchResult> {
-  const { token, year, month } = opts
-  const doFetch = opts.fetchImpl ?? fetch
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
+/** 平台请求的公共选项。 */
+interface PlatformOptions {
+  token: string
+  signal?: AbortSignal
+  fetchImpl?: typeof fetch
+  timeoutMs?: number
+  extraHeaders?: Record<string, string>
+  scheme?: CredentialScheme
+}
 
+/** 合并外部取消信号与超时信号。 */
+function mergeSignals(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal | undefined {
   // Python 用 requests 的 timeout；fetch 侧用 AbortSignal.timeout 等价表达，
   // 并与外部 signal 合并，保证取消与超时都能真正中断请求。
   const signals: AbortSignal[] = []
-  if (opts.signal) signals.push(opts.signal)
+  if (signal) signals.push(signal)
   if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
     signals.push(AbortSignal.timeout(timeoutMs))
   }
-  const signal =
-    signals.length === 0
-      ? undefined
-      : signals.length === 1
-        ? signals[0]
-        : (AbortSignal as unknown as { any: (s: AbortSignal[]) => AbortSignal }).any(signals)
+  if (signals.length === 0) return undefined
+  if (signals.length === 1) return signals[0]
+  return (AbortSignal as unknown as { any: (s: AbortSignal[]) => AbortSignal }).any(signals)
+}
+
+/**
+ * 平台请求公共层：发出请求、逐层校验 `code` / `biz_code`，成功后把归一化过的
+ * `biz_data` 交给调用方解析。
+ *
+ * 抽出来的原因：金额接口（`/usage/cost`）与账户概览（`/users/get_user_summary`）
+ * 的错误语义、重定向策略、防令牌回显处理与用量接口**完全一致**，复制一份必然漂移。
+ */
+async function platformBizData(
+  opts: PlatformOptions,
+  url: string,
+  label: string,
+): Promise<{ ok: true; bizData: BizData } | { ok: false; error: UsageError }> {
+  const { token } = opts
+  const doFetch = opts.fetchImpl ?? fetch
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  const signal = mergeSignals(opts.signal, timeoutMs)
 
   let resp: Response
   try {
     // py:67 —— Python 捕获 requests.exceptions.RequestException
-    resp = await doFetch(buildUrl(year, month), {
+    resp = await doFetch(url, {
       headers: buildHeaders(token, opts.extraHeaders, opts.scheme),
       signal,
       // 安全（实测确认，2026-10）：**绝不跟随重定向**。
@@ -249,7 +289,7 @@ export async function fetchMonth(opts: FetchMonthOptions): Promise<FetchResult> 
     if (data.code === 40003) {
       return err(
         'unauthorized',
-        `40003 认证失败：该令牌不被用量接口接受（msg=${safeMsg(pyStr(data.msg), token)}）`,
+        `40003 认证失败：该令牌不被${label}接受（msg=${safeMsg(pyStr(data.msg), token)}）`,
       )
     }
     return err(
@@ -269,8 +309,65 @@ export async function fetchMonth(opts: FetchMonthOptions): Promise<FetchResult> 
   }
 
   // py:88 `return (inner.get("biz_data") or {}), None`
-  const bizData = (inner.biz_data as BizData | undefined) || {}
-  return { ok: true, bizData }
+  //
+  // `unwrapBizData` 抹平两者差异：`/usage/amount` 给对象、`/usage/cost` 给数组。
+  return { ok: true, bizData: unwrapBizData(inner.biz_data) }
+}
+
+/**
+ * 拉取某月用量（或金额）。等价于 Python `fetch_month(year, month) -> (biz_data, error_msg)`。
+ *
+ * 返回判别式联合而非 Python 的 `(data, err)` 二元组：`err` 为空串在 Python 里是
+ * 假值，用联合类型表达同一语义可以避免「空错误串被当成失败」这类隐式 bug。
+ */
+export async function fetchMonth(opts: FetchMonthOptions): Promise<FetchResult> {
+  return platformBizData(
+    opts,
+    buildUrl(opts.year, opts.month, opts.kind ?? 'amount'),
+    opts.kind === 'cost' ? '金额接口' : '用量接口',
+  )
+}
+
+/**
+ * 读取平台账户概览：充值余额 / 赠送余额 / **官方累计消费**。
+ *
+ * 为什么要它：`/usage/cost` 是按月归集的金额，逐月相加与官方账单存在极小差异
+ * （实测 31 个月求和 ¥676.0696 vs 账单 `total_costs` ¥675.7352，差 0.05%，
+ * 来自按请求四舍五入）。把官方账单数一并显示出来，用户就能一眼看出这是
+ * 「插件按接口重算」还是「官方口径」。
+ *
+ * 失败一律降级为 `undefined`（余额不是核心功能，不该因为它失败就让整个刷新报错）；
+ * 但 401 仍然要抛出语义 —— 由调用方按需处理。
+ *
+ * 注：面板上的展示项已按要求移除，但数据链路保留，便于以后再加回。
+ */
+export async function fetchAccountSummary(
+  opts: PlatformOptions,
+): Promise<{ ok: true; summary: AccountSummary } | { ok: false; error: UsageError }> {
+  const r = await platformBizData(opts, `${BASE_URL}${ACCOUNT_SUMMARY_PATH}`, '账户接口')
+  if (!r.ok) return r
+
+  const raw = r.bizData as unknown as {
+    normal_wallets?: Array<{ currency?: string; balance?: string }>
+    bonus_wallets?: Array<{ currency?: string; balance?: string }>
+    total_costs?: Array<{ currency?: string; amount?: string }>
+  }
+  const num = (v: unknown): number => {
+    const n = Number(v)
+    return Number.isFinite(n) ? Math.round(n * 1e8) / 1e8 : 0
+  }
+  const normal = Array.isArray(raw.normal_wallets) ? raw.normal_wallets : []
+  const bonus = Array.isArray(raw.bonus_wallets) ? raw.bonus_wallets : []
+  const costs = Array.isArray(raw.total_costs) ? raw.total_costs : []
+  return {
+    ok: true,
+    summary: {
+      balance: num(normal[0]?.balance),
+      bonusBalance: num(bonus[0]?.balance),
+      totalCosts: num(costs[0]?.amount),
+      currency: costs[0]?.currency ?? normal[0]?.currency ?? 'CNY',
+    },
+  }
 }
 
 /** 读取响应体文本，失败时返回空串（仅用于错误文案，不影响判定）。 */

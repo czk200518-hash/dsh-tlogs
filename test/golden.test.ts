@@ -31,11 +31,19 @@ const fixtureDir = join(here, 'fixtures')
 /**
  * 权威参考脚本（`deepseek_python_*.py`）。
  *
- * 它是**外部输入且已 gitignore**，所以新克隆的仓库里**不会有它** —— 依赖它的测试
- * 必须优雅跳过，否则 `npm test` 在别人机器上必然失败。名字也做成动态查找，
- * 避免写死某个具体文件名。
+ * 它是**外部输入且已 gitignore**（第 24 行把真实 USER_TOKEN 明文写死），所以新克隆的
+ * 仓库里**不会有它** —— 依赖它的测试必须优雅跳过，否则 `npm test` 在别人机器上必然
+ * 失败。名字也做成动态查找，避免写死某个具体文件名。
+ *
+ * 优先读环境变量 `TLOGS_REFERENCE_SCRIPT`：这样可以在**不把带令牌的文件放回仓库**的
+ * 前提下跑对拍（例如指向桌面上的那一份）。
  */
 function findReferenceScript(): string | undefined {
+  const fromEnv = process.env.TLOGS_REFERENCE_SCRIPT
+  if (fromEnv && fromEnv.trim().length > 0) {
+    const p = fromEnv.trim()
+    return existsSync(p) ? p : undefined
+  }
   try {
     const hit = readdirSync(root)
       .filter((f) => /^deepseek_python_.*\.py$/.test(f))

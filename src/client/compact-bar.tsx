@@ -14,7 +14,7 @@
 
 import * as React from 'react'
 import { h, Fragment } from './h.js'
-import { formatFull, formatNumber } from './format.js'
+import { formatFull, formatMoney, formatMoneyFull, formatNumber } from './format.js'
 import type { UsageSnapshot } from '../types.js'
 
 export interface CompactBarProps {
@@ -25,10 +25,12 @@ export interface CompactBarProps {
   expanded: boolean
   busy: boolean
   onToggle: () => void
+  /** 手动刷新（绕过缓存 TTL，强制重新拉取）。 */
+  onRefresh: () => void
 }
 
 export function CompactBar(props: CompactBarProps): React.ReactElement {
-  const { snapshot, numberFormat, wide, expanded, busy, onToggle } = props
+  const { snapshot, numberFormat, wide, expanded, busy, onToggle, onRefresh } = props
 
   const metrics = snapshot?.compact ?? []
   const stale = snapshot?.stale === true
@@ -37,6 +39,25 @@ export function CompactBar(props: CompactBarProps): React.ReactElement {
   // 收起态（图标栏）显示总计：优先取 scope==='total' 的那一项，
   // 万一用户把 total 从 compactMetrics 里去掉就退回第一项。
   const lead = metrics.find((m) => m.scope === 'total') ?? metrics[0]
+
+  /** 指标的完整 tooltip：请求数用「次请求」，金额用「元」，其余按 token 计。 */
+  const fullTitle = (
+    label: string,
+    value: number,
+    unit?: 'tokens' | 'requests' | 'money',
+    source?: 'platform' | 'local' | 'merged',
+  ): string => {
+    // 侧边栏太窄放不下口径徽标，但悬停必须能说明「这个数不是平台账单给的」。
+    const note =
+      source === 'local'
+        ? '（本机口径：DSH 会话日志）'
+        : source === 'merged'
+          ? '（平台 + 本机合并口径）'
+          : ''
+    if (unit === 'requests') return `${label} ${formatFull(value)} 次请求${note}`
+    if (unit === 'money') return `${label} ${formatMoneyFull(value)} 元`
+    return `${label} ${formatFull(value)} tokens${note}`
+  }
 
   return (
     <Fragment>
@@ -49,11 +70,25 @@ export function CompactBar(props: CompactBarProps): React.ReactElement {
         {wide ? (
           <span className="tlogs-metrics">
             {metrics.map((m, i) => (
-              <Fragment key={`${m.scope}-${i}`}>
-                {i > 0 ? <span className="tlogs-sep">·</span> : null}
-                <span className="tlogs-metric" title={`${m.label} ${formatFull(m.value)} tokens`}>
+              <Fragment key={`${m.scope}-${m.label}-${i}`}>
+                {/* 不再用「·」分隔：指标行现在允许换行（见 styles.ts 的 .tlogs-metrics），
+                    分隔符会留在行首变成孤立的一个点。8px 的 flex gap 已经足够分组。 */}
+                <span
+                  className="tlogs-metric"
+                  title={fullTitle(m.label, m.value, m.unit, m.source)}
+                >
                   <span className="tlogs-metric-label">{m.label}</span>
-                  <span className="tlogs-metric-value">{formatNumber(m.value, numberFormat)}</span>
+                  <span
+                    className={
+                      m.unit === 'money'
+                        ? 'tlogs-metric-value tlogs-metric-money'
+                        : 'tlogs-metric-value'
+                    }
+                  >
+                    {m.unit === 'money'
+                      ? formatMoney(m.value)
+                      : formatNumber(m.value, numberFormat)}
+                  </span>
                 </span>
               </Fragment>
             ))}
@@ -62,9 +97,19 @@ export function CompactBar(props: CompactBarProps): React.ReactElement {
         ) : (
           <span
             className="tlogs-collapsed-value"
-            title={lead ? `${lead.label} ${formatFull(lead.value)} tokens` : 'tlogs — DeepSeek 用量'}
+            title={
+              lead
+                ? lead.unit === 'money'
+                  ? `${lead.label} ${formatMoneyFull(lead.value)} 元`
+                  : `${lead.label} ${formatFull(lead.value)} tokens`
+                : 'tlogs — DeepSeek 用量'
+            }
           >
-            {lead ? formatNumber(lead.value, numberFormat) : '—'}
+            {lead
+              ? lead.unit === 'money'
+                ? formatMoney(lead.value)
+                : formatNumber(lead.value, numberFormat)
+              : '—'}
           </span>
         )}
 
@@ -82,6 +127,21 @@ export function CompactBar(props: CompactBarProps): React.ReactElement {
               ⟳
             </span>
           ) : null}
+          {/* 手动刷新。收起态（图标栏）空间不够，用 CSS 隐藏。 */}
+          <button
+            type="button"
+            className="tlogs-iconbtn tlogs-refresh"
+            disabled={busy}
+            onClick={(e: React.MouseEvent) => {
+              // 阻止冒泡：否则点刷新会连带把面板展开/收起。
+              e.stopPropagation()
+              onRefresh()
+            }}
+            aria-label="刷新用量数据"
+            title="刷新用量"
+          >
+            ↻
+          </button>
           <button
             type="button"
             className="tlogs-iconbtn"

@@ -3,7 +3,7 @@
 # 作为 profile bundle 层（package.json 的 dsh.bundle.patch 字段）应用，
 # 把本插件的 Loader 行插入 profile roster。
 #
-# node 半（exports "."）在 host 进程运行：拉取用量、管理凭据、注册 query_token_usage 工具；
+# node 半（exports "."）在 host 进程运行：拉取用量与金额、管理凭据、注册 query_token_usage 工具；
 # dsh.client 声明让浏览器半（exports "./client"，served at /plugins/dsh-tlogs/client.js）
 # 在 GUI 中加载，并向侧边栏页脚的 sidebar.footer.action 席位注册内嵌组件。
 - insert:
@@ -15,7 +15,9 @@
         # 起始查询月份（与权威 Python 脚本默认一致）
         startYear: 2024
         startMonth: 4
-        # 每次月度请求间隔（毫秒，与 Python 的 time.sleep 对应）
+        # 每次月度请求间隔（毫秒，与 Python 的 time.sleep 对应）。
+        # 同月的「用量 + 金额」两个请求背靠背发出，不在两者之间等待，
+        # 因此首次全量回补的耗时仍是「月份数 × 本值」而不是两倍。
         requestIntervalMs: 1000
         # 缓存时长（秒）
         cacheTTL:
@@ -24,8 +26,11 @@
         # 内嵌组件默认展开状态
         defaultExpanded: false
         # 紧凑条上显示哪些指标。
-        # 默认只有「总计 + 今日」；本周/本月在展开面板里看。
-        # 四项并排会把紧凑条挤爆，末尾数字被裁掉，所以不放默认值里。
+        # 默认「总 Token + 今日」。金额**不进紧凑条**：侧边栏页脚太窄，
+        # 四个指标会把标签挤成看不清的碎片（金额在展开面板的卡片里看）。
+        # 可选：week / month / last7 / last30（滚动窗口，与控制台同口径）
+        # 以及 cost_total / cost_today / cost_last7 / cost_last30（对应的金额），
+        # 想在小窗看金额再显式加。
         compactMetrics:
           - total
           - today
@@ -39,12 +44,26 @@
         enableProjectScope: true
         # 是否允许历史缓存落盘（false 时完全不访问文件系统）
         persistHistory: true
+        # 定时自动刷新间隔（秒）。默认 300 = 5 分钟；0 = 关闭。
+        # 单次刷新真正会打哪些月份仍由 cacheTTL 决定，不会每 5 分钟全量拉 31 个月。
+        autoRefreshSeconds: 300
         # 工具结果最多返回多少行
         maxToolRows: 20
         # 是否把用量数字暴露给模型（注册 query_token_usage）。
         # 默认 false：工具的返回值会进入模型上下文，也就是把用量统计作为对话
         # 内容发给模型提供方。默认只在侧边栏 UI 展示，模型看不到。
-        exposeUsageToModel: false        # 是否复用 DSH 已登录账号的 Platform 会话凭据（方案 D）。
+        exposeUsageToModel: false
+        # 是否复用 DSH 已登录账号的 Platform 会话凭据（方案 D）。
         # 默认 true（零配置取数）。设 false 后插件完全不接触 deepseekAccount，
         # 只剩环境变量 / 配置 / 本机凭据 / 手动填写四条显式来源。
         useAccountSession: true
+        # 是否读取本机会话日志作为**第二路数据源**（默认 true）。
+        # 平台账单只覆盖 DeepSeek 官方通道，且当天数据要等平台结算
+        # （实测北京 12:07 当天仍为 0）；火山方舟/小米/GLM 等供应商平台完全看不到。
+        # 本机口径直接从 <DSH_HOME>/sessions/** 重建逐日用量：实时、覆盖所有供应商，
+        # 但只看得到本机。两者按「逐日取大 + 本机非 DeepSeek 供应商相加」合并，
+        # 卡片上会标注这份数字来自哪一路。
+        # 设 false 后插件完全不读会话日志（代价：当天与非 DeepSeek 用量会缺失）。
+        localUsage: true
+        # 本机口径回溯天数（默认 32，覆盖「近 30 天」窗口）
+        localUsageScanDays: 32

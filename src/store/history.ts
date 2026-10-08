@@ -12,18 +12,40 @@
  */
 
 import {
+  emptyMoney,
   emptyStat,
   type HistoryReport,
   type MonthRow,
+  type Money,
   type ScopeStat,
   type Stat,
   TOKEN_TYPES,
   type UsageError,
 } from '../types.js'
-import { addInto, toScopeStat } from '../api/parser.js'
+import { addInto, addMoneyInto, toScopeStat } from '../api/parser.js'
 
 /** 一年 12 个月的常量。 */
 const MONTHS_PER_YEAR = 12
+
+/**
+ * 从任意输入读出一个 `Money`；非法/全空返回 undefined。
+ *
+ * 归一化策略与 `Stat` 一致（缺键补 0、非有限数补 0），但**额外要求至少有一个非 0 项**：
+ * 旧缓存没有 `cost` 字段，如果这里容忍空对象，`plan()` 就会认为该月已抓到金额而
+ * 永远不再回补（与当年 `days` 丢字段导致 29 个月日历空白是同一类 bug）。
+ */
+function readMoney(v: unknown): Money | undefined {
+  if (!v || typeof v !== 'object') return undefined
+  const out = emptyMoney()
+  let any = false
+  for (const t of TOKEN_TYPES) {
+    const raw = (v as Record<string, unknown>)[t]
+    const n = typeof raw === 'number' && Number.isFinite(raw) ? raw : 0
+    out[t] = n
+    if (n !== 0) any = true
+  }
+  return any ? out : undefined
+}
 
 /** 月份键：`YYYY-MM`（月份补零）。 */
 export type MonthKey = string
@@ -155,11 +177,15 @@ export class HistoryStore {
    * @param end    区间终点（当前月）
    * @param incremental true = 只拉「当月 + 上月」（后续刷新）；
    *                    false = 拉取区间内所有尚未成功缓存的月份（首次全量）
+   * @param needCost 是否要求这些月份也带金额。true 时缺金额的月份会被一并挑出
+   *                 （一次性回补，见 `costFetched`）。默认 false，保持与 Python 的对拍口径
+   *                 只依赖 token 数据。
    */
   plan(
     start: { year: number; month: number },
     end: { year: number; month: number },
     incremental: boolean,
+    needCost = false,
   ): FetchPlan {
     const all = enumerateMonths(start, end)
     if (all.length === 0) return { months: [], full: true }
@@ -179,9 +205,55 @@ export class HistoryStore {
     }
 
     // 全量：跳过已经成功缓存的月份。失败月份必须重试，因此不跳过。
-    const months = all.filter((m) => !this.rows.has(monthKey(m.year, m.month)) || this.failed.has(monthKey(m.year, m.month)))
+    //
+    // 另需**一次性回补**逐日明细：早期版本抓到的月份没存 `days`，这类行「有统计、
+    // 无错误」，按旧逻辑会被永久跳过 —— 日历因此对 29 个月都只能显示「—」（实测）。
+    // 把「缺少 daysFetched 标记」也视为不完整，让它们被重抓一次；抓完即打标记，
+    // 即便接口当月没返回 days 也不会反复重抓。
+    //
+    // `costFetched` 是同一套机制的第二个用途：金额能力上线后，老的缓存行没有 `cost`，
+    // 会被挑出来重抓一次（这一次要多打一遍 `usage/cost`）。
+    const months = all.filter((m) => {
+      const key = monthKey(m.year, m.month)
+      if (this.failed.has(key)) return true
+      const row = this.rows.get(key)
+      if (!row) return true
+      // 已经抓过（有标记），或已经带着非空逐日明细 —— 都算完整，跳过。
+      if (needCost && row.costFetched !== true) return true
+      if (row.daysFetched === true) return false
+      if (row.days && row.days.length > 0) return false
+      return true
+    })
     const full = months.length === all.length
     return { months, full }
+  }
+
+  /**
+   * 金额是否已覆盖区间内所有月份。
+   *
+   * 未覆盖时界面上的「总金额」只是**部分合计**（例如首次启用金额能力、历史还在回补），
+   * 必须让 UI 能表达这一点，否则用户会以为总额就这么点。
+   *
+   * 三种状态的判定（很关键，写错任意一条都会静默给出错误的总额）：
+   *  - 该月**从没抓到过**（没有行）→ 不完整。注意不能 `continue` 跳过：全新安装时
+   *    一行都没有，跳过就会直接报「完整」，于是首次全量拉取期间界面显示
+   *    「总 ¥0.00」并宣称完整（实测踩过）。
+   *  - 该月**拉取失败** → 跳过。「金额缺失」与「这个月拉不到」是两回事，
+   *    后者由 `stale` 角标表达；否则一个失败月份会让金额永远显示「统计中」。
+   *  - 该月有行但没打过 `costFetched` → 不完整（待回补）。
+   */
+  costComplete(
+    start: { year: number; month: number },
+    end: { year: number; month: number },
+  ): boolean {
+    for (const m of enumerateMonths(start, end)) {
+      const key = monthKey(m.year, m.month)
+      const row = this.rows.get(key)
+      if (row?.error) continue
+      if (!row) return false
+      if (row.costFetched !== true) return false
+    }
+    return true
   }
 
   /** 区间内是否每月都有成功数据（用于判断「总计」是否完整）。 */
@@ -209,6 +281,12 @@ export class HistoryStore {
     const monthly: MonthRow[] = []
 
     const yearStats: Record<string, Stat> = {}
+    // 金额侧与 token 侧并行累加，口径完全一致（只算成功的月份）。
+    const grandCost = emptyMoney()
+    const modelCosts: Record<string, number> = {}
+    const yearCosts: Record<string, Money> = {}
+    let currency = 'CNY'
+    let sawCost = false
 
     for (const m of enumerateMonths(start, end)) {
       const key = monthKey(m.year, m.month)
@@ -241,21 +319,47 @@ export class HistoryStore {
       // py:240-242
       addInto(yStat, row.stat)
 
+      // 金额：月度五类拆分 → 总计 / 按年；按模型只累加总额（`costModels` 本身就只有总额）。
+      if (row.cost) {
+        sawCost = true
+        if (row.currency) currency = row.currency
+        addMoneyInto(grandCost, row.cost)
+        let yc = yearCosts[yKey]
+        if (!yc) {
+          yc = emptyMoney()
+          yearCosts[yKey] = yc
+        }
+        addMoneyInto(yc, row.cost)
+      }
+      for (const [model, amount] of Object.entries(row.costModels ?? {})) {
+        modelCosts[model] = (modelCosts[model] ?? 0) + amount
+      }
+
       monthly.push(row)
     }
 
     const yearly: Record<string, ScopeStat> = {}
-    for (const [y, s] of Object.entries(yearStats)) yearly[y] = toScopeStat(s)
+    for (const [y, s] of Object.entries(yearStats)) {
+      yearly[y] = toScopeStat(s, sawCost ? yearCosts[y] : undefined, currency)
+    }
 
     const models: Record<string, ScopeStat> = {}
-    for (const [k, s] of Object.entries(modelTotals)) models[k] = toScopeStat(s)
+    for (const [k, s] of Object.entries(modelTotals)) {
+      // 模型维度只有总额，没有五类拆分；把总额塞进 `Money` 的某个桶（例如
+      // PROMPT_TOKEN）会让「输入成本」显示成一个混合值。因此总额由 `modelCosts`
+      // 单独携带，UI 取 `report.modelCosts[model]`。
+      models[k] = toScopeStat(s)
+    }
 
     return {
       generatedAt: new Date().toISOString(),
       range: { start: monthKey(start.year, start.month), end: monthKey(end.year, end.month) },
-      grand: toScopeStat(grand),
+      grand: toScopeStat(grand, sawCost ? grandCost : undefined, currency),
       yearly,
       models,
+      modelCosts,
+      currency,
+      costComplete: this.costComplete(start, end),
       monthly,
     }
   }
@@ -285,6 +389,13 @@ export class HistoryStore {
           stat: row.stat,
           models: row.models,
           days: row.days,
+          // 必须一并持久化：否则每次重启都会把全部月份判为「需要回补」，白跑 31 个请求。
+          daysFetched: row.daysFetched,
+          cost: row.cost,
+          costModels: row.costModels,
+          currency: row.currency,
+          // 同理：不持久化就会每次重启都重打一遍 usage/cost（31 次请求）。
+          costFetched: row.costFetched,
         }),
       )
     return { rows, savedAt: new Date().toISOString() }
@@ -318,7 +429,53 @@ export class HistoryStore {
           models[name] = ms
         }
       }
-      store.rows.set(monthKey(r.year, r.month), { year: r.year, month: r.month, stat, models })
+      // 逐日明细必须一并恢复。
+      //
+      // 这里原先只重建了 stat/models，把 days 丢掉了 —— 后果是：每次重启后缓存里的
+      // 逐日明细全部失效，日历只能显示当月/上月（那两个月会被增量刷新重抓），
+      // 而其余月份因为 daysFetched 已为 true、计划器不会再回补，会**永久空白**。
+      const days: Array<{ date: string; stat: Stat; cost?: Money }> = []
+      if (Array.isArray(r.days)) {
+        for (const d of r.days) {
+          if (!d || typeof d !== 'object') continue
+          const dd = d as { date?: unknown; stat?: unknown; cost?: unknown }
+          if (typeof dd.date !== 'string' || !dd.stat || typeof dd.stat !== 'object') continue
+          const ds = emptyStat()
+          for (const t of TOKEN_TYPES) {
+            const v = (dd.stat as Record<string, unknown>)[t]
+            ds[t] = typeof v === 'number' && Number.isFinite(v) ? v : 0
+          }
+          const entry: { date: string; stat: Stat; cost?: Money } = { date: dd.date, stat: ds }
+          const dc = readMoney(dd.cost)
+          if (dc) entry.cost = dc
+          days.push(entry)
+        }
+      }
+
+      // 金额：与 days 同理，不恢复就等于每次重启都重打一遍 usage/cost。
+      const cost = readMoney(r.cost)
+      let hasCost = false
+      if (cost) {
+        for (const t of TOKEN_TYPES) if (cost[t] !== 0) hasCost = true
+      }
+      const costModels: Record<string, number> = {}
+      if (r.costModels && typeof r.costModels === 'object') {
+        for (const [name, v] of Object.entries(r.costModels)) {
+          if (typeof v === 'number' && Number.isFinite(v)) costModels[name] = v
+        }
+      }
+
+      // daysFetched 只在明确为 true 时才带上：旧缓存没有该字段 → undefined →
+      // 计划器会把该月判为「需要回补逐日明细」，这正是我们想要的一次性迁移。
+      const stored: MonthRow = { year: r.year, month: r.month, stat, models }
+      if (days.length > 0) stored.days = days
+      if (r.daysFetched === true) stored.daysFetched = true
+      if (hasCost && cost) stored.cost = cost
+      if (Object.keys(costModels).length > 0) stored.costModels = costModels
+      if (typeof r.currency === 'string' && r.currency) stored.currency = r.currency
+      // 与 daysFetched 同样只认明确的 true：旧缓存（无 cost）会被一次性回补。
+      if (r.costFetched === true) stored.costFetched = true
+      store.rows.set(monthKey(r.year, r.month), stored)
     }
     return store
   }

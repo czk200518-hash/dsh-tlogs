@@ -8,8 +8,9 @@
 
 import * as React from 'react'
 import { h, Fragment } from './h.js'
-import { formatFull, formatNumber } from './format.js'
-import type { AuthState, CardData, UsageSnapshot } from '../types.js'
+import { formatFull, formatMoney, formatMoneyFull, formatNumber } from './format.js'
+import { moneyTotal } from '../types.js'
+import type { AuthState, CardData, CardSourceInfo, UsageSnapshot } from '../types.js'
 
 export interface ExpandPanelProps {
   snapshot: UsageSnapshot | null
@@ -33,7 +34,62 @@ const SOURCE_LABEL: Record<string, string> = {
   'desktop-login': '内置登录窗口',
 }
 
-/** 数据卡片：标题 + 总量 + 输入/输出/请求拆分。 */
+/*
+ * 平台接口的 `days[]` 按 **UTC 日**切桶，而用户在本地日历里理解「今天」，
+ * 两者只有在 UTC±0 时才一致。这里把日界换算成本机时间写进 tooltip。
+ *
+ * 为什么必须解释：实测北京时间 2026-10-08 00:20 一直在跑对话，
+ * 用量全部记进平台桶 `2026-10-07`，而「今日」读到的是还没开始的 `2026-10-08`
+ * → 显示 0。用户不知道日界在哪，只会当成 bug。
+ */
+/**
+ * 面板上那行时间口径的**固定文案**（用户指定的原文，逐字照抄，不要改写成动态拼接）。
+ *
+ * 写法上刻意把「时区」和「换日时刻」都点出来：只写时区（例如 `统计时区：UTC+08:00`）
+ * 会被读成「北京 0 点换日」，而平台的日桶实际是 **UTC 00:00 = 北京 08:00** 换日 ——
+ * 实测就是这样（北京 00:20 的调用全部记进平台桶 `2026-10-07`），凌晨看到「今日 0」
+ * 的困惑正是这么来的。
+ *
+ * 平台桶的边界在**北京时区里是恒定值**（永远 08:00），所以这句写死是准确的：
+ * 换到别的时区跑，变的是「本机几点换日」，那句话在 tooltip 里按真实时区解释。
+ */
+const TIME_BASIS_LABEL = '统计口径：平台日（UTC）· 北京 08:00 换日'
+
+/** 时间口径那行的 tooltip：按本机真实时区解释换日时刻。 */
+function dayBasisTip(): { tip: string } {
+  /** getTimezoneOffset() 是「UTC − 本地」的分钟数，取反得到本地相对 UTC 的偏移。 */
+  const offsetMin = -new Date().getTimezoneOffset()
+  /** 把「相对 UTC 的分钟偏移」折成 `HH:MM`。 */
+  const hhmm = (m: number): string => {
+    const x = ((m % 1440) + 1440) % 1440
+    return `${String(Math.floor(x / 60)).padStart(2, '0')}:${String(x % 60).padStart(2, '0')}`
+  }
+  const start = hhmm(offsetMin)
+  const end = hhmm(offsetMin + 1440)
+
+  /**
+   * 账单与用量接口的日界并不一致，这一点必须写出来，否则对账时一定会怀疑插件算错：
+   * 官方**计费**按北京时间日（00:00 换日），而官方**用量接口**的日桶按 UTC
+   * （北京 08:00 换日）。两者在跨日处最多差 8 小时的用量。
+   */
+  const billing =
+    '官方账单按北京时间日（0 点）结算，本插件的日桶按接口口径（UTC 日）—— ' +
+    '两者在跨日处最多差 8 小时的用量。'
+
+  if (offsetMin === 0) {
+    return {
+      tip: `平台接口的 days[] 按 UTC 日切桶；本机时区就是 UTC，所以本机 00:00 换日。${billing}`,
+    }
+  }
+  return {
+    tip:
+      `平台接口的 days[] 按 UTC 日切桶：本机 ${start} 换日，` +
+      `「今日」= ${start} ～ 次日 ${end}（不是本机 00:00 换日）。` +
+      `当周/当月同理（周一 00:00 / 1 日 00:00 均按 UTC 计）。${billing}`,
+  }
+}
+
+/** 数据卡片：标题 + 总量（token 与 ¥）+ 输入/输出/请求拆分。 */
 function Card(props: {
   card: CardData
   numberFormat: 'full' | 'short'
@@ -44,6 +100,18 @@ function Card(props: {
   const clickable = typeof onCycle === 'function' && (card.options?.length ?? 0) > 1
   const current = card.options?.find((o) => o.id === selectedId) ?? card.options?.[0]
   const stat = current?.stat ?? card.stat
+
+  // 金额：没有金额数据时**不显示 ¥0.00** —— 那会让人以为这段时间真的没花钱，
+  // 而实际是「金额还没回补到」。宁可少一行。
+  const cost = stat.cost ? moneyTotal(stat.cost) : undefined
+  const moneyTip =
+    cost === undefined
+      ? ''
+      : [
+          `${card.label} 合计 ${formatMoneyFull(cost)} 元`,
+          `输入 ${formatMoneyFull(inputCost(stat))} 元`,
+          `输出 ${formatMoneyFull(outputCost(stat))} 元`,
+        ].join('\n')
 
   return (
     <div
@@ -68,6 +136,20 @@ function Card(props: {
           {card.label}
           {current && (card.options?.length ?? 0) > 1 ? ` · ${current.label}` : ''}
         </span>
+        {/* 口径徽标：只在数字不是纯平台口径时出现（平台口径是默认、无需标注）。 */}
+        {card.source && card.source.kind !== 'platform' ? (
+          <span className="tlogs-src" title={sourceTip(card.source)}>
+            {card.source.kind === 'local' ? '本机' : '合并'}
+          </span>
+        ) : null}
+        {card.source?.costPending ? (
+          <span
+            className="tlogs-src tlogs-src-pending"
+            title="金额是平台账单口径；该窗口平台尚未结算完，金额会偏小（token 数已用本机口径）"
+          >
+            ¥结算中
+          </span>
+        ) : null}
         {card.stale ? <span className="tlogs-stale">⚠</span> : null}
       </div>
 
@@ -75,24 +157,95 @@ function Card(props: {
         <span className="tlogs-card-total is-error">{card.error}</span>
       ) : (
         <Fragment>
-          <span className="tlogs-card-total" title={`${formatFull(stat.totalTokens)} tokens`}>
-            {formatNumber(stat.totalTokens, numberFormat)}
+          <span className="tlogs-card-line">
+            <span className="tlogs-card-total" title={`${formatFull(stat.totalTokens)} tokens`}>
+              {formatNumber(stat.totalTokens, numberFormat)}
+            </span>
+            {cost === undefined ? null : (
+              <span className="tlogs-card-money" title={moneyTip}>
+                {formatMoney(cost)}
+              </span>
+            )}
           </span>
           <span className="tlogs-card-split">
             <span>
-              输入 <b title={formatFull(stat.inputTokens)}>{formatNumber(stat.inputTokens, numberFormat)}</b>
+              <span className="tlogs-split-label">输入</span>
+              <b title={formatFull(stat.inputTokens)}>{formatNumber(stat.inputTokens, numberFormat)}</b>
             </span>
             <span>
-              输出 <b title={formatFull(stat.outputTokens)}>{formatNumber(stat.outputTokens, numberFormat)}</b>
+              <span className="tlogs-split-label">输出</span>
+              <b title={formatFull(stat.outputTokens)}>{formatNumber(stat.outputTokens, numberFormat)}</b>
             </span>
             <span>
-              请求 <b title={formatFull(stat.requests)}>{formatNumber(stat.requests, numberFormat)}</b>
+              <span className="tlogs-split-label">请求</span>
+              <b title={formatFull(stat.requests)}>{formatNumber(stat.requests, numberFormat)}</b>
             </span>
           </span>
         </Fragment>
       )}
     </div>
   )
+}
+
+/** 窗口的「输入」费用 = PROMPT + 缓存命中 + 缓存未命中。 */
+function inputCost(stat: CardData['stat']): number {
+  const c = stat.cost
+  if (!c) return 0
+  return c.PROMPT_TOKEN + c.PROMPT_CACHE_HIT_TOKEN + c.PROMPT_CACHE_MISS_TOKEN
+}
+
+/** 窗口的「输出」费用。 */
+function outputCost(stat: CardData['stat']): number {
+  return stat.cost?.RESPONSE_TOKEN ?? 0
+}
+
+/**
+ * 卡片右上角口径徽标的 tooltip。
+ *
+ * 双路数据源下「这个数字是谁给的」必须能一眼追查：平台口径只覆盖 DeepSeek
+ * 官方通道且当天要等结算，本机口径（会话日志）实时、含所有供应商但不含别的设备。
+ */
+function sourceTip(s: CardSourceInfo): string {
+  const head =
+    s.kind === 'local'
+      ? '本机口径（DSH 会话日志）：实时，覆盖本机所有供应商'
+      : s.kind === 'merged'
+        ? '平台 + 本机合并口径'
+        : '平台账单口径'
+  const lines = [
+    head,
+    `平台 ${formatFull(s.platformTokens)} tokens`,
+    `本机 ${formatFull(s.localTokens)} tokens（其中 DeepSeek 通道 ${formatFull(s.localDeepseekTokens)}）`,
+  ]
+  if (s.otherProviders.length > 0) {
+    lines.push(
+      '平台看不到的供应商：' +
+        s.otherProviders
+          .slice(0, 4)
+          .map((p) => `${p.provider} ${formatFull(p.tokens)}`)
+          .join('、'),
+    )
+  }
+  if (s.costPending) lines.push('金额仍是平台账单：该窗口平台尚未结算完，会偏小')
+  return lines.join('\n')
+}
+
+/** 本机口径不可用的原因（英文枚举）转成一句人话。 */
+function reasonLabel(reason: string | undefined): string {
+  switch (reason) {
+    case 'no-session-logs':
+      return '未找到会话日志'
+    case 'zstd-unavailable':
+      return '当前运行时不支持 zstd（需要 Node 22.15+ / 24）'
+    case 'not-scanned':
+      return '尚未扫描'
+    case 'restored-empty':
+      return '缓存里没有可用数据'
+    default:
+      return reason && reason.startsWith('sessions-dir-unreadable')
+        ? '会话目录不可读'
+        : '读取失败'
+  }
 }
 
 export function ExpandPanel(props: ExpandPanelProps): React.ReactElement {
@@ -119,6 +272,8 @@ export function ExpandPanel(props: ExpandPanelProps): React.ReactElement {
    * 宿主是否真能开登录窗口。缺省按「可用」处理，兼容尚未下发该字段的旧宿主。
    */
   const loginAvailable = snapshot?.display.loginAvailable !== false
+  /** 平台日（UTC 日）在本机时区对应的时间段（tooltip 用）。 */
+  const basis = dayBasisTip()
 
   const cycle = (index: number, card: CardData) => {
     const opts = card.options ?? []
@@ -232,6 +387,28 @@ export function ExpandPanel(props: ExpandPanelProps): React.ReactElement {
         <div className="tlogs-hint">凭据来源：{SOURCE_LABEL[auth.source] ?? auth.source}</div>
       ) : null}
 
+      {/* 时间口径必须写在凭据来源下面：平台按 UTC 日切桶，而用户按本机日历理解
+          「今日/当周/当月」。不写清楚，凌晨 00:00–08:00（GMT+8）看到「今日」不是从
+          本机 0 点算起就会以为是 bug —— 实测正是这样（详见 dayBasisTip 的注释）。
+          文案是用户指定的固定原文，逐字照抄；具体换日时刻在 tooltip 里解释。 */}
+      <div className="tlogs-hint" title={basis.tip}>
+        {TIME_BASIS_LABEL}
+      </div>
+
+      {/* 本机口径不可用必须说出来：那种情况下窗口卡片退回纯平台账单，
+          而平台当天数据要等结算 —— 「今日 0」就是这么来的，不能安静地显示 0。 */}
+      {snapshot?.localUsage && !snapshot.localUsage.available ? (
+        <div className="tlogs-hint">
+          本机口径不可用（{reasonLabel(snapshot.localUsage.reason)}）：窗口卡片只用平台账单，
+          当天与「非 DeepSeek 供应商」的用量可能缺失或显示 0
+        </div>
+      ) : null}
+
+      {/* 金额尚未覆盖全部月份时必须说明，否则「总 ¥」会被当成完整总额。 */}
+      {snapshot && !snapshot.costComplete && snapshot.loading ? (
+        <div className="tlogs-hint">正在回补历史金额，卡片上的 ¥ 暂为部分合计…</div>
+      ) : null}
+
       <div className="tlogs-cards">
         {(snapshot?.cards ?? []).map((card, i) => (
           <Card
@@ -244,6 +421,24 @@ export function ExpandPanel(props: ExpandPanelProps): React.ReactElement {
         ))}
         {snapshot === null ? <div className="tlogs-empty">加载中…</div> : null}
       </div>
+
+      {/* 平台账户概览：余额与**官方账单**累计消费。
+          为什么单列一行：卡片上的 ¥ 是本插件按 `usage/cost` 逐月重算的，与官方账单
+          存在极小差异（实测 31 个月 ¥676.07 vs 账单 ¥675.74，来自按请求四舍五入）。
+          把官方数字摆出来，用户才能判断「插件算错了」还是「口径/精度差异」。 */}
+      {snapshot?.account ? (
+        <div className="tlogs-account">
+          <span title="平台充值余额（get_user_summary.normal_wallets）">
+            余额 <b>{formatMoneyFull(snapshot.account.balance)}</b>
+          </span>
+          <span title="平台账单的累计消费（get_user_summary.total_costs），即控制台口径">
+            官方累计消费 <b>{formatMoneyFull(snapshot.account.totalCosts)}</b>
+          </span>
+          {snapshot.account.bonusBalance > 0 ? (
+            <span title="赠送余额">赠送 <b>{formatMoneyFull(snapshot.account.bonusBalance)}</b></span>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="tlogs-footer-actions">
         {enableDetailView ? (

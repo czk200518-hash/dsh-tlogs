@@ -1,16 +1,20 @@
 /**
- * tlogs — 内嵌容器（紧凑条 / 展开面板 / 详细视图 在同一容器内切换）。
+ * tlogs — 内嵌容器（紧凑条 / 展开面板 在同一容器内切换）。
  *
  * 需求 1.1：组件通过 DSH 的 slot 扩展点注册到侧边栏页脚，
- * 完全在文档流内，不使用 position: fixed / absolute 伪造悬浮。
+ * **紧凑条与展开面板**完全在文档流内，不使用 position: fixed / absolute 伪造悬浮。
  * 需求 1.2：展开时把上方内容顶上去（就地撑开），不覆盖。
+ *
+ * 「详细数据」改为打开**弹窗**（detail-modal.tsx）：侧边栏太窄，表格与日历都需要
+ * 横向空间。弹窗是真正意义上的浮层，因此它使用 fixed —— 这是对需求 1.1 唯一且
+ * 有意的偏离（需求原文写的是「不弹 Modal」），已在 README 记录。
  */
 
 import * as React from 'react'
 import { h } from './h.js'
 import { CompactBar } from './compact-bar.js'
 import { ExpandPanel } from './expand-panel.js'
-import { DetailView } from './detail-view.js'
+import { DetailModal } from './detail-modal.js'
 import { useTlogs } from './store.js'
 import type { Rpc } from './api.js'
 
@@ -24,13 +28,14 @@ export interface TlogsFooterProps {
   defaultExpanded?: boolean
 }
 
-type View = 'compact' | 'expanded' | 'detail'
+type View = 'compact' | 'expanded'
 
 export function TlogsFooter(props: TlogsFooterProps): React.ReactElement {
   const { wide = true, rpc, defaultExpanded = false } = props
 
   const store = useTlogs(rpc, 'mount')
   const [view, setView] = React.useState<View>(defaultExpanded ? 'expanded' : 'compact')
+  const [detailOpen, setDetailOpen] = React.useState(false)
 
   /** 用户是否手动切换过形态；一旦切换就不再套用 host 下发的默认值。 */
   const userToggled = React.useRef(false)
@@ -51,8 +56,7 @@ export function TlogsFooter(props: TlogsFooterProps): React.ReactElement {
   const enableDetailView = display?.enableDetailView ?? props.enableDetailView !== false
 
   const openDetail = () => {
-    userToggled.current = true
-    setView('detail')
+    setDetailOpen(true)
     void store.loadDetail()
   }
 
@@ -62,16 +66,18 @@ export function TlogsFooter(props: TlogsFooterProps): React.ReactElement {
       setView('expanded')
       // 需求 1.5：展开面板时再刷新一次（受缓存 TTL 约束，不一定真的发请求）。
       void store.refresh(false)
-    } else if (view === 'expanded') {
-      setView('compact')
     } else {
-      setView('expanded')
+      setView('compact')
     }
   }
 
   const refresh = () => {
     void store.refresh(true)
-    if (view === 'detail') void store.loadDetail()
+    if (detailOpen) {
+      void store.loadDetail()
+      // 图表数据也重取：手动刷新后项目快照会更新，累计曲线与卡片才对得上。
+      void store.reloadSeries()
+    }
   }
 
   return (
@@ -83,6 +89,7 @@ export function TlogsFooter(props: TlogsFooterProps): React.ReactElement {
         expanded={view !== 'compact'}
         busy={store.busy}
         onToggle={toggle}
+        onRefresh={refresh}
       />
 
       {view === 'expanded' ? (
@@ -100,13 +107,19 @@ export function TlogsFooter(props: TlogsFooterProps): React.ReactElement {
         />
       ) : null}
 
-      {view === 'detail' ? (
-        <DetailView
+      {detailOpen ? (
+        <DetailModal
           detail={store.detail}
+          monthDetail={store.monthDetail}
+          series={store.series}
+          seriesLoading={store.seriesLoading}
           loading={store.busy}
           busy={store.busy}
-          onBack={() => setView('expanded')}
+          error={store.error}
+          onClose={() => setDetailOpen(false)}
           onRefresh={refresh}
+          onSelectMonth={(year, month) => void store.loadMonth(year, month)}
+          onLoadSeries={(q) => void store.loadSeries(q)}
         />
       ) : null}
     </div>

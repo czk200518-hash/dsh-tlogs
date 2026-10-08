@@ -24,7 +24,17 @@ import { enumerateMonths, monthKey, utcYearMonth } from '../lib/store/history.js
 import { emptyStat, TOKEN_TYPES } from '../lib/types.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const referenceScript = path.join(root, 'deepseek_python_20261007_a1f087.py')
+
+/**
+ * 权威参考脚本路径。
+ *
+ * 优先 `TLOGS_REFERENCE_SCRIPT`（可以指向仓库外的副本，例如桌面上的原件）——
+ * 该文件第 24 行含明文令牌，已加入 .gitignore，不该为了跑对拍而放回仓库。
+ */
+const referenceScript =
+  process.env.TLOGS_REFERENCE_SCRIPT && process.env.TLOGS_REFERENCE_SCRIPT.trim().length > 0
+    ? process.env.TLOGS_REFERENCE_SCRIPT.trim()
+    : path.join(root, 'deepseek_python_20261007_a1f087.py')
 
 /**
  * 只从环境变量取令牌。

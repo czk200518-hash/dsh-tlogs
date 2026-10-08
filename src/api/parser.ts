@@ -14,12 +14,15 @@
  */
 
 import {
+  emptyMoney,
   emptyStat,
   isTokenType,
+  moneyTotal,
   TOKEN_TYPES,
   type BizData,
   type DayUsage,
   type ModelUsage,
+  type Money,
   type ParsedUsage,
   type ScopeStat,
   type Stat,
@@ -38,12 +41,46 @@ function isDict(v: unknown): v is Record<string, unknown> {
  * 唯一有意的偏差：Python 的 `int(float("inf"))` 会抛 OverflowError 且**不在**
  * `except (ValueError, TypeError)` 覆盖范围内（脚本会整体崩溃）；这里对非有限数
  * 一律返回 0。真实接口的 amount 始终是整数字符串，不会触发该分支。
+ *
+ * **只用于 token 计数**（`usage/amount`）。金额必须走 `toMoneyAmount`，
+ * 否则会被 `Math.trunc` 截成 0（实测金额形如 `"12.1115392000000000"`）。
  */
 export function toAmount(value: unknown): number {
   const raw = value || 0
   const n = Number(raw)
   if (!Number.isFinite(n)) return 0
   return Math.trunc(n)
+}
+
+/**
+ * 把**金额**字符串转成数值（CNY 元），保留小数。
+ *
+ * 与 `toAmount` 的唯一区别就是**不截断** —— 实测 `usage/cost` 返回
+ * `"12.1115392000000000"`，用 `Math.trunc` 会得到 0（这个坑实测踩过）。
+ *
+ * 精度：接口给 16 位小数，`Number()` 取最近 double，逐项累加的误差量级约 1e-11 元，
+ * 而展示只到分（1e-2）甚至厘（1e-4），因此无需引入定点数。这里对单个值做 1e-8
+ * 圆整，只为去掉 double 表示噪声、让持久化的 JSON 更短更稳定。
+ */
+export function toMoneyAmount(value: unknown): number {
+  const raw = value || 0
+  const n = Number(raw)
+  if (!Number.isFinite(n)) return 0
+  return Math.round(n * 1e8) / 1e8
+}
+
+/**
+ * 归一化 `biz_data`：`usage/amount` 给**对象**，`usage/cost` 给**长度 1 的数组**。
+ *
+ * 不做这一步就会静默拿到 `undefined.total` ⇒ 全 0（实测：`usage/cost` 的月度金额
+ * 会全部显示成 ¥0.00，且不报任何错）。
+ */
+export function unwrapBizData(raw: unknown): BizData {
+  if (Array.isArray(raw)) {
+    const first = raw[0]
+    return isDict(first) ? (first as BizData) : {}
+  }
+  return isDict(raw) ? (raw as BizData) : {}
 }
 
 /**
@@ -102,16 +139,26 @@ export function parseBizData(bizData: BizData | null | undefined): ParsedUsage {
  * 实测接口会返回**当月完整天数**（含尚未到来的日期，全为 0），
  * 所以按日期过滤 today / week / month 无需额外处理缺失日期。
  */
-export function parseDays(bizData: BizData | null | undefined): Array<{ date: string; stat: Stat }> {
+export function parseDays(
+  bizData: BizData | null | undefined,
+  cost?: ParsedCost | null,
+): Array<{ date: string; stat: Stat; cost?: Money }> {
   const days = bizData?.days
   const list = Array.isArray(days) ? days : []
-  const out: Array<{ date: string; stat: Stat }> = []
+  const out: Array<{ date: string; stat: Stat; cost?: Money }> = []
+  // 实测金额与 token 的逐日日期**逐个相同**，因此可以直接按 date 建索引对齐，
+  // 而不必假设两边顺序一致（顺序一致只是当前实现的巧合，不是契约）。
+  const costByDate = new Map<string, Money>()
+  for (const c of cost?.days ?? []) costByDate.set(c.date, c.cost)
   for (const day of list) {
     if (!isDict(day)) continue
     const date = (day as DayUsage).date
     if (typeof date !== 'string' || date.length === 0) continue
     const { agg } = aggregateModels((day as DayUsage).data)
-    out.push({ date, stat: agg })
+    const entry: { date: string; stat: Stat; cost?: Money } = { date, stat: agg }
+    const c = costByDate.get(date)
+    if (c) entry.cost = c
+    out.push(entry)
   }
   return out
 }
@@ -131,16 +178,21 @@ export function outputTokens(stat: Stat): number {
 }
 
 /** 由原始 Stat 派生 ScopeStat（拆分输入/输出/总计/请求）。 */
-export function toScopeStat(stat: Stat): ScopeStat {
+export function toScopeStat(stat: Stat, cost?: Money, currency?: string): ScopeStat {
   const input = inputTokens(stat)
   const output = outputTokens(stat)
-  return {
+  const base: ScopeStat = {
     raw: stat,
     inputTokens: input,
     outputTokens: output,
     totalTokens: input + output, // py:204 `g_total = g_in + g_out`
     requests: stat.REQUEST,
   }
+  if (cost) {
+    base.cost = cost
+    base.currency = currency ?? 'CNY'
+  }
+  return base
 }
 
 /** 过滤掉「零用量」的行 —— 对应屏幕表格里的可见性规则。 */
@@ -177,4 +229,99 @@ export function toRow(key: string, label: string, stat: Stat): {
   stat: ScopeStat
 } {
   return { key, label, stat: toScopeStat(stat) }
+}
+
+/* ------------------------------------------------------------------ *
+ * 金额（usage/cost）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 按五类计量项聚合**金额**。与 `aggregateModels` 同构，唯一区别是用
+ * `toMoneyAmount`（保留小数）而不是 `toAmount`（截断）。
+ */
+function aggregateMoney(
+  items: unknown,
+  onModel?: (model: string, amount: number) => void,
+): { total: Money; models: Record<string, number> } {
+  const total = emptyMoney()
+  const models: Record<string, number> = {}
+
+  const list = Array.isArray(items) ? items : []
+  for (const item of list) {
+    if (!isDict(item)) continue
+    const model = (item.model as string) || 'unknown'
+    let sum = 0
+    const usage = (item as ModelUsage).usage
+    for (const u of Array.isArray(usage) ? usage : []) {
+      if (!isDict(u)) continue
+      const t = (u as UsageEntry).type
+      if (!isTokenType(t)) continue
+      const a = toMoneyAmount((u as UsageEntry).amount)
+      total[t] += a
+      sum += a
+    }
+    // 只登记真的花了钱的模型：接口会给一堆全 0 模型，登记进去只会让界面出现空行。
+    if (sum > 0) models[model] = Math.round(sum * 1e8) / 1e8
+    onModel?.(model, sum)
+  }
+
+  return { total, models }
+}
+
+/** 某月的金额解析结果。 */
+export interface ParsedCost {
+  /** 该月总费用，按五类拆分。 */
+  total: Money
+  /** 该月费用合计（元）。 */
+  amount: number
+  /** 按模型的费用（元），已过滤掉 0。 */
+  models: Record<string, number>
+  /** 逐日费用（五类拆分），日期与 `usage/amount` 的逐日日期逐个相同。 */
+  days: Array<{ date: string; cost: Money }>
+  /** 币种（实测 `CNY`）。 */
+  currency: string
+}
+
+/**
+ * 解析 `usage/cost` 的 `biz_data`。
+ *
+ * 实测事实（2026-10 直接对拍）：
+ *  - `biz_data` 是**数组** `[{ total, days, currency }]`，必须先 `unwrapBizData`
+ *  - `days[].data[]` 与 `total[]` 同构，逐日金额之和与月度金额之和**完全相等**
+ *  - `days[].date` 与 `usage/amount` 的 `days[].date` **逐个相同** ⇒ 可与 token 逐日对齐
+ *  - `REQUEST` 的金额恒为 0（请求不计费）
+ *
+ * 逐日保存**五类拆分**而不是一个总额：today/week/month/last7/last30 这些窗口是按天
+ * 切片出来的，只留总额就没法给出「输入花了多少钱 / 输出花了多少钱」。
+ */
+export function parseCost(bizData: BizData | null | undefined): ParsedCost {
+  const { total, models } = aggregateMoney(bizData?.total)
+  const days: Array<{ date: string; cost: Money }> = []
+  for (const day of Array.isArray(bizData?.days) ? bizData!.days! : []) {
+    if (!isDict(day)) continue
+    const date = (day as DayUsage).date
+    if (typeof date !== 'string' || date.length === 0) continue
+    const { total: dTotal } = aggregateMoney((day as DayUsage).data)
+    days.push({ date, cost: dTotal })
+  }
+  const currency = typeof bizData?.currency === 'string' && bizData.currency ? bizData.currency : 'CNY'
+  return {
+    total,
+    amount: round8(moneyTotal(total)),
+    models,
+    days,
+    currency,
+  }
+}
+
+/** 圆整到 1e-8（元），去掉 double 表示噪声。 */
+function round8(n: number): number {
+  return Math.round(n * 1e8) / 1e8
+}
+
+/** 把 src 的金额累加进 target（就地）。 */
+export function addMoneyInto(target: Money, src: Money | undefined): Money {
+  if (!src) return target
+  for (const t of TOKEN_TYPES) target[t] += src[t]
+  return target
 }
