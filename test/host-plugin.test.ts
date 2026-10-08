@@ -783,3 +783,88 @@ test('双路数据源端到端：没有平台凭据时，今日卡片仍由本�
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+// ------------------------------------------------- 工具输出不得外泄本机路径
+//
+// `query_token_usage` 的返回值**直接进模型上下文** —— 也就是会作为对话内容
+// 发给模型提供方。历史实现里「项目」的 id 是 `session.header.cwd` 归一化后的
+// **完整绝对路径**（因为工具入参按 cwd 寻址），于是本机目录结构会随工具输出
+// 离开本机。现在项目 id 一律走 `publicProjectId()` 的不可逆短哈希。
+//
+// 这一组是**回归保护**：任何把原始 cwd 重新塞回工具出参的改动都必须让它失败。
+
+test('工具输出不含本机绝对路径：项目 id 是不可逆哈希', async () => {
+  const { apply: applyPlugin } = await import('../lib/index.js')
+  const { UsageService } = await import('../lib/service.js')
+  const { HistoryStore } = await import('../lib/store/history.js')
+  const { ProjectHistoryStore } = await import('../lib/store/project-history.js')
+  const { makeUsageTool } = await import('../lib/tools.js')
+  const { emptyStat, TOKEN_TYPES } = await import('../lib/types.js')
+  const { publicProjectId } = await import('../lib/store/project.js')
+
+  /** 哨兵路径：任何出参里出现它都算泄漏。 */
+  const SECRET_CWD = 'F:\\SENTINEL-LEAK-DIR\\secret-project-name'
+  const stat = emptyStat()
+  for (const t of TOKEN_TYPES) stat[t] = 7
+
+  const service = new UsageService({
+    config: resolveConfig(
+      { startYear: 2026, startMonth: 10, requestIntervalMs: 0 },
+      () => undefined,
+    ),
+    history: new HistoryStore(),
+    projectHistory: new ProjectHistoryStore(),
+    resolveToken: async () => ({ token: 't', source: 'config' }),
+    authState: async () => ({ status: 'ok', source: 'config' }),
+    now: () => new Date(2026, 9, 7, 12, 0, 0),
+    fetchImpl: (async () =>
+      new Response('{"code":0,"data":{"biz_code":0,"biz_data":{}}}', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })) as unknown as typeof fetch,
+    sleep: async () => {},
+    projectProvider: {
+      available: () => true,
+      list: async () => [{ id: SECRET_CWD, label: 'secret-project-name', stat }],
+    },
+  })
+
+  const tool = makeUsageTool(service) as unknown as {
+    parameters: unknown
+    description: string
+    output: { render: (a: unknown, v: unknown) => unknown[] }
+    execute: (a: Record<string, unknown>, e: Record<string, unknown>) => Promise<unknown>
+  }
+
+  /** 断言一段文本里没有哨兵路径的任何片段。 */
+  const noPath = (label: string, text: string) => {
+    assert.equal(text.includes(SECRET_CWD), false, `${label} 不得含完整 cwd`)
+    assert.equal(text.includes('SENTINEL-LEAK-DIR'), false, `${label} 不得含路径片段`)
+  }
+
+  // 1) 正常查询：出参 + render 文本
+  const ok = await tool.execute({ scope: 'project' }, {})
+  noPath('execute(scope=project) 出参', JSON.stringify(ok))
+  noPath('render(scope=project) 文本', JSON.stringify(tool.output.render({}, ok)))
+
+  // 2) 错误路径：这条消息同样会进模型上下文
+  await assert.rejects(
+    () => tool.execute({ scope: 'project', projectId: 'nope' }, {}),
+    (e: Error) => {
+      noPath('未找到项目的异常消息', e.message)
+      // 但哈希后的 id 应当可见：否则模型无从按 id 指定项目。
+      assert.match(e.message, /id: [0-9a-f]{16}/, '异常里应给出可用的哈希 id')
+      return true
+    },
+  )
+
+  // 3) 模型能看到的 schema 与描述本身
+  noPath('parameters schema', JSON.stringify(tool.parameters))
+  noPath('tool description', tool.description)
+
+  // 4) 服务侧口径：projectOptions 与图表用的 projectList 必须同源（都是哈希）
+  const opts = await service.projectOptions()
+  assert.equal(opts[0]?.id, publicProjectId(SECRET_CWD), 'projectOptions 的 id 必须是哈希')
+  assert.notEqual(opts[0]?.id, SECRET_CWD)
+  noPath('projectOptions 出参', JSON.stringify(opts))
+})

@@ -109,6 +109,7 @@ test('服务缺失 / 方法缺失 / 未登录 / 抛错都返回 undefined，且�
 function makeManager(overrides: {
   readPlatformSession?: () => Promise<ResolvedToken | undefined>
   readConfigToken?: () => string | undefined
+  now?: () => number
 }) {
   const secrets = new MemorySecretStore()
   const tokens = new TokenManager({ secrets, env: () => undefined, ...overrides })
@@ -116,21 +117,207 @@ function makeManager(overrides: {
 }
 
 test('方案 D：没有手工凭据时复用账号会话凭据，并带回部署请求头', async () => {
+  let probed = 0
   const { tokens } = makeManager({
-    readPlatformSession: async () => ({
-      token: 'session-abc',
-      source: 'platform-session',
-      scheme: 'x-dsh-auth-token',
-      headers: { 'x-deployment': 'cn' },
-    }),
+    readPlatformSession: async () => {
+      probed++
+      return {
+        token: 'session-abc',
+        source: 'platform-session',
+        scheme: 'x-dsh-auth-token',
+        headers: { 'x-deployment': 'cn' },
+      }
+    },
   })
 
+  // 刷新之外：**取不到**账号会话凭据，也绝不向账号服务伸手。
+  assert.equal(await tokens.resolve(), undefined)
+  assert.equal(probed, 0, '租约之外绝不能向账号服务索取凭据')
+
+  // 刷新期间（租约内）才可取。
+  await tokens.beginCredentialLease()
   const r = await tokens.resolve()
   assert.equal(r?.token, 'session-abc')
   assert.equal(r?.source, 'platform-session')
   assert.equal(r?.scheme, 'x-dsh-auth-token', '账号会话凭据必须带上正确的投递方式')
   assert.deepEqual(r?.headers, { 'x-deployment': 'cn' })
+  assert.equal(probed, 1)
+
+  // 刷新结束：引用被丢弃，且不再重新索取。
+  tokens.endCredentialLease()
+  assert.equal(await tokens.resolve(), undefined)
+  assert.equal(probed, 1, '租约释放后不应再去取')
+  // 状态汇报用的是探测元数据，因此释放后依然如实 —— 不必为了汇报再取一次凭据。
   assert.deepEqual(await tokens.state(), { status: 'ok', source: 'platform-session' })
+})
+
+test('凭据租约：状态汇报不会为了「看一眼」而索取账号凭据', async () => {
+  let probed = 0
+  const { tokens } = makeManager({
+    readPlatformSession: async () => {
+      probed++
+      return { token: 'session-abc', source: 'platform-session' }
+    },
+  })
+
+  // 还没探测过：如实报「未知」，而不是去取一次凭据来回答。
+  assert.deepEqual(await tokens.state(), { status: 'unknown' })
+  assert.equal(probed, 0, 'state() 不得成为索取凭据的入口')
+
+  await tokens.beginCredentialLease()
+  await tokens.resolve()
+  tokens.endCredentialLease()
+
+  // 探测过之后再汇报多少次都不再取数。
+  for (let i = 0; i < 5; i++) assert.deepEqual(await tokens.state(), { status: 'ok', source: 'platform-session' })
+  assert.equal(probed, 1, '五轮 snapshot 轮询只应产生最初那一次探测')
+})
+
+test('凭据租约可重入：并发刷新共享一份，最后一层退出才释放', async () => {
+  let probed = 0
+  const { tokens } = makeManager({
+    readPlatformSession: async () => {
+      probed++
+      return { token: 'session-abc', source: 'platform-session' }
+    },
+  })
+
+  await tokens.beginCredentialLease()
+  await tokens.beginCredentialLease()
+  assert.equal(probed, 1, '嵌套租约不应重复索取')
+
+  tokens.endCredentialLease()
+  assert.equal((await tokens.resolve())?.token, 'session-abc', '内层退出后租约仍然有效')
+
+  tokens.endCredentialLease()
+  assert.equal(await tokens.resolve(), undefined, '最后一层退出才丢弃引用')
+})
+
+test('失效标记只留摘要：不保留已失效令牌的原文', async () => {
+  const { tokens } = makeManager({})
+
+  await tokens.markInvalid('bad-token-value', '401 unauthorized')
+
+  // 行为正确：坏令牌不会被解析回来。
+  assert.equal(await tokens.resolve(), undefined)
+  assert.deepEqual(await tokens.state(), { status: 'invalid', message: '401 unauthorized' })
+  assert.equal(tokens.needsLogin, true)
+
+  // 安全性质：实例内部（含私有字段）不得残留令牌原文。
+  const dump = JSON.stringify(tokens, (_k, v) => v)
+  assert.equal(dump.includes('bad-token-value'), false, '失效令牌的原文不得留驻内存')
+})
+
+// ------------------------------------------------- 失效态的自动恢复（重新登录）
+
+test('失效后重新登录：自动恢复一次，随即回到常规路径且不留凭据引用', async () => {
+  let current = 'stale-token'
+  let probed = 0
+  let clock = 0
+  const { tokens } = makeManager({
+    readPlatformSession: async () => {
+      probed++
+      return { token: current, source: 'platform-session' }
+    },
+    now: () => clock,
+  })
+
+  await tokens.markInvalid('stale-token', '401 unauthorized')
+
+  // 刚失效时先探一次（用户可能还没登录，探不到就维持失效）。
+  assert.deepEqual(await tokens.state(), { status: 'invalid', message: '401 unauthorized' })
+  assert.equal(probed, 1, '每次新失效都先给一次立即探测的机会')
+
+  // 用户重新登录：账号服务换发了新凭据。
+  current = 'fresh-token'
+  clock += 30_000
+  assert.deepEqual(await tokens.state(), { status: 'ok', source: 'platform-session' })
+  assert.equal(probed, 2)
+
+  // 恢复之后回到常规路径：继续轮询不再向账号服务索取任何东西。
+  for (let i = 0; i < 6; i++) {
+    clock += 800
+    assert.deepEqual(await tokens.state(), { status: 'ok', source: 'platform-session' })
+  }
+  assert.equal(probed, 2, '恢复之后不再探测')
+
+  // 安全性质：恢复探测取到的凭据原文没有留在实例里。
+  assert.equal(JSON.stringify(tokens).includes('fresh-token'), false, '探测用的凭据不得留存')
+})
+
+test('失效态恢复探测有限速：轮询不会变成每秒一次的账号服务调用', async () => {
+  let probed = 0
+  let clock = 0
+  const { tokens } = makeManager({
+    readPlatformSession: async () => {
+      probed++
+      // 一直是那个坏值（用户还没重新登录）
+      return { token: 'stale-token', source: 'platform-session' }
+    },
+    now: () => clock,
+  })
+
+  await tokens.markInvalid('stale-token', '401 unauthorized')
+  await tokens.state()
+  assert.equal(probed, 1)
+
+  // 客户端在失效期间的密集轮询：800ms 一次，共 30 次（= 24 秒 < 30 秒限速）
+  for (let i = 0; i < 30; i++) {
+    clock += 800
+    assert.deepEqual(await tokens.state(), { status: 'invalid', message: '401 unauthorized' })
+  }
+  assert.equal(probed, 1, '限速窗口内绝不再探')
+
+  // 越过限速窗口后才再探一次。
+  clock += 10_000
+  await tokens.state()
+  assert.equal(probed, 2)
+})
+
+test('失效态：账号服务始终是同一个坏值 / 没有凭据时，维持失效而不是误报已恢复', async () => {
+  let mode: 'same-bad' | 'none' = 'same-bad'
+  let clock = 0
+  const { tokens } = makeManager({
+    readPlatformSession: async () =>
+      mode === 'none' ? undefined : { token: 'stale-token', source: 'platform-session' },
+    now: () => clock,
+  })
+
+  await tokens.markInvalid('stale-token', '401 unauthorized')
+  assert.deepEqual(await tokens.state(), { status: 'invalid', message: '401 unauthorized' })
+
+  mode = 'none'
+  clock += 60_000
+  assert.deepEqual(
+    await tokens.state(),
+    { status: 'invalid', message: '401 unauthorized' },
+    '探测不到凭据不等于已恢复',
+  )
+})
+
+test('失效态恢复探测可并发去重：同一次探测被多个 snapshot 共享', async () => {
+  let probed = 0
+  let resolveProbe: ((v: ResolvedToken | undefined) => void) | undefined
+  const { tokens } = makeManager({
+    readPlatformSession: () => {
+      probed++
+      return new Promise<ResolvedToken | undefined>((res) => {
+        resolveProbe = res
+      })
+    },
+    now: () => 0,
+  })
+
+  await tokens.markInvalid('stale-token', '401 unauthorized')
+
+  // 三个并发的 state()（模拟重叠的 snapshot 请求）只应发起一次探测。
+  const all = Promise.all([tokens.state(), tokens.state(), tokens.state()])
+  await new Promise((r) => setTimeout(r, 0))
+  assert.equal(probed, 1, '并发轮询必须共享同一次探测')
+
+  resolveProbe?.({ token: 'fresh-token', source: 'platform-session' })
+  const states = await all
+  for (const s of states) assert.deepEqual(s, { status: 'ok', source: 'platform-session' })
 })
 
 test('手工粘贴的凭据优先于账号自动复用（不打扰账号服务）', async () => {
@@ -165,7 +352,10 @@ test('账号凭据读取抛错时安全降级，不影响插件', async () => {
       throw new Error('account service exploded')
     },
   })
+  // 取数只发生在租约内，所以异常路径也要在租约内验证：必须被吞掉，不得冒泡。
+  await tokens.beginCredentialLease()
   assert.equal(await tokens.resolve(), undefined)
+  tokens.endCredentialLease()
   assert.deepEqual(await tokens.state(), { status: 'missing' })
 })
 
@@ -178,9 +368,11 @@ test('方案 A（按名字盲猜宿主服务 getter）已被移除，解析链�
     // 故意塞一个「看起来像猜出来的值」的无关选项，它必须被忽略。
     readDesktopAuth: async () => 'guessed-token',
   } as never)
+  await tokens.beginCredentialLease()
   const r = await tokens.resolve()
   assert.equal(r?.token, 'session-abc')
   assert.notEqual(r?.source, 'desktop-auth')
+  tokens.endCredentialLease()
 })
 
 // ------------------------------------------------------------------ 请求头合并
@@ -272,8 +464,10 @@ test('scheme 从解析结果一路传到请求头', async () => {
       scheme: 'x-dsh-auth-token',
     }),
   })
+  await tokens.beginCredentialLease()
   const r = await tokens.resolve()
   assert.equal(r?.scheme, 'x-dsh-auth-token')
+  tokens.endCredentialLease()
 
   let seen: Record<string, string> | undefined
   const fakeFetch = (async (_url: string | URL, init?: RequestInit) => {

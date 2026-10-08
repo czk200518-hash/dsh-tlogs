@@ -784,3 +784,128 @@ test('金额端点失败不影响该月的 token 数据（少一列 ≠ 整月�
   const snap = await service.snapshot()
   assert.equal(snap.costComplete, false, '有月份缺金额 → 不能宣称完整')
 })
+
+// ------------------------------------------------------------ 凭据租约生命周期
+//
+// 安全需求：账号会话凭据**只在刷新期间**被索取，拉取一结束立刻释放；刷新之外
+// （尤其是客户端每 800ms 一次的 snapshot 轮询）绝不向宿主伸手。
+//
+// 这里刻意把 harness 造成「只有租约生效时才拿得到令牌」—— 若 service 不再持有
+// 租约，拉取会因为拿不到令牌而失败，测试立刻可见；而不是悄悄退化成
+// 「每次 snapshot 都去宿主要一次令牌」。
+
+function leaseHarness() {
+  const state = { active: false, depth: 0, begins: 0, ends: 0 }
+  return {
+    state,
+    hooks: {
+      beginCredentialLease: async () => {
+        state.begins++
+        state.depth++
+        state.active = true
+      },
+      endCredentialLease: () => {
+        state.ends++
+        state.depth--
+        state.active = state.depth > 0
+      },
+    },
+    /** 模拟 TokenManager：租约之外取不到账号会话凭据。 */
+    resolveToken: async () =>
+      state.active ? { token: 'leased-token', source: 'platform-session' as const } : undefined,
+  }
+}
+
+test('凭据租约：刷新期间才持有账号凭据，刷新一结束立刻释放', async () => {
+  const history = new HistoryStore()
+  const projectHistory = new ProjectHistoryStore()
+  const lease = leaseHarness()
+  let leaseDuringRequest: boolean[] = []
+  const inner = fakeFetch({
+    '/usage/amount?year=2026&month=10': monthAmountPayload(500, 50, 4, '2026-10-07'),
+  })
+
+  const service = new UsageService({
+    config: resolveConfig({ startYear: 2026, startMonth: 10, requestIntervalMs: 0 }, () => undefined),
+    history,
+    projectHistory,
+    resolveToken: lease.resolveToken,
+    ...lease.hooks,
+    authState: async () => ({ status: 'ok', source: 'platform-session' }),
+    now: () => new Date(2026, 9, 7, 12, 0, 0),
+    fetchImpl: (async (u: string | URL | Request) => {
+      leaseDuringRequest.push(lease.state.active)
+      return inner(u)
+    }) as unknown as typeof fetch,
+    sleep: async () => {},
+    projectProvider: { available: () => false, list: async () => [] },
+  })
+
+  // 刷新之前：没有租约，凭据不可得。
+  assert.equal(await lease.resolveToken(), undefined)
+  assert.equal(lease.state.begins, 0)
+
+  await service.refresh('manual')
+
+  assert.equal(lease.state.begins, 1, '一次刷新只索取一次凭据')
+  assert.equal(lease.state.ends, 1, '刷新结束必须释放')
+  assert.equal(lease.state.active, false, '刷新结束后不得再持有凭据引用')
+  assert.ok(leaseDuringRequest.length > 0, '确实发出过请求')
+  assert.ok(
+    leaseDuringRequest.every(Boolean),
+    '网络阶段全程租约有效（否则会拿不到令牌）',
+  )
+  // 数据确实落库 → 证明租约在拉取期间真的生效，而不是「刚好没用到令牌」。
+  assert.equal(history.get(2026, 10)?.stat.PROMPT_CACHE_HIT_TOKEN, 500)
+  // 刷新之后凭据再次不可得。
+  assert.equal(await lease.resolveToken(), undefined)
+})
+
+test('凭据租约：刷新抛错也必定释放（不把凭据漏在内存里）', async () => {
+  const lease = leaseHarness()
+  const service = new UsageService({
+    config: resolveConfig({ startYear: 2026, startMonth: 10, requestIntervalMs: 0 }, () => undefined),
+    history: new HistoryStore(),
+    projectHistory: new ProjectHistoryStore(),
+    // 解析凭据时直接抛错 —— 模拟账号服务异常，异常必须穿过 finally。
+    resolveToken: async () => {
+      throw new Error('account service exploded')
+    },
+    ...lease.hooks,
+    authState: async () => ({ status: 'ok', source: 'platform-session' }),
+    now: () => new Date(2026, 9, 7, 12, 0, 0),
+    fetchImpl: fakeFetch({}) as unknown as typeof fetch,
+    sleep: async () => {},
+    projectProvider: { available: () => false, list: async () => [] },
+  })
+
+  await assert.rejects(() => service.refresh('manual'))
+
+  assert.equal(lease.state.begins, 1)
+  assert.equal(lease.state.ends, 1, '异常路径也必须释放租约')
+  assert.equal(lease.state.active, false)
+})
+
+test('凭据租约：snapshot 轮询是热路径，绝不索取账号凭据', async () => {
+  const lease = leaseHarness()
+  const service = new UsageService({
+    config: resolveConfig({ startYear: 2026, startMonth: 10, requestIntervalMs: 0 }, () => undefined),
+    history: new HistoryStore(),
+    projectHistory: new ProjectHistoryStore(),
+    resolveToken: lease.resolveToken,
+    ...lease.hooks,
+    // 真实链路里 authState 会走 TokenManager.state()，它同样不得索取凭据；
+    // 这里断言的是 service 侧：snapshot 不碰租约钩子。
+    authState: async () => ({ status: 'ok', source: 'platform-session' }),
+    now: () => new Date(2026, 9, 7, 12, 0, 0),
+    fetchImpl: fakeFetch({}) as unknown as typeof fetch,
+    sleep: async () => {},
+    projectProvider: { available: () => false, list: async () => [] },
+  })
+
+  // 连续多轮轮询（模拟刷新期间的 800ms 轮询）。
+  for (let i = 0; i < 8; i++) await service.snapshot()
+
+  assert.equal(lease.state.begins, 0, 'snapshot 是热路径，绝不能在这里取凭据')
+  assert.equal(lease.state.ends, 0)
+})

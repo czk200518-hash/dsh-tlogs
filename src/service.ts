@@ -105,8 +105,18 @@ export interface UsageServiceOptions {
   >
   /** token 失效回调（HTTP 401）。 */
   onAuthInvalid?: (token: string, message: string) => void | Promise<void>
-  /** 认证状态读取。 */
+  /** 认证状态读取。**不得**为了汇报状态去索取账号会话凭据（见 authState 的说明）。 */
   authState: () => Promise<AuthState>
+  /**
+   * 取用账号会话凭据的**租约**（只在一次刷新开始时调用）。
+   *
+   * 有了它，账号会话凭据就只在「刷新期间」存在于宿主内存里：刷新结束（含抛错、
+   * 提前返回）由 `endCredentialLease` 释放引用。刷新之外的热路径
+   * （客户端每 800ms 一次的 `snapshot → authState`）再也取不到令牌。
+   */
+  beginCredentialLease?: () => Promise<void>
+  /** 释放账号会话凭据租约；与 `beginCredentialLease` 必须配对（用 try/finally 保证）。 */
+  endCredentialLease?: () => void
   logger?: Logger
   /** 可注入时钟与 fetch，便于测试。 */
   now?: () => Date
@@ -237,7 +247,7 @@ export class UsageService {
     const need = this.needsRefresh(reason)
     if (!need.total && !need.current) return { started: false }
 
-    this.inflight = this.runRefresh(need, onProgress, signal)
+    this.inflight = this.withCredentialLease(() => this.runRefresh(need, onProgress, signal))
       .catch((e) => {
         this.log('error', `tlogs: 刷新失败 ${e instanceof Error ? e.message : String(e)}`)
       })
@@ -253,11 +263,27 @@ export class UsageService {
     if (this.inflight) return this.inflight
     const need = this.needsRefresh(reason)
     if (!need.total && !need.current) return
-    this.inflight = this.runRefresh(need, onProgress, signal).finally(() => {
+    this.inflight = this.withCredentialLease(() => this.runRefresh(need, onProgress, signal)).finally(() => {
       this.inflight = undefined
       this.progress = undefined
     })
     return this.inflight
+  }
+
+  /**
+   * 在**账号会话凭据租约**内执行一次刷新。
+   *
+   * 这是全插件唯一索取账号会话凭据的时机：刷新开始时取来，刷新结束时（正常返回、
+   * 提前返回、抛错都算）立刻释放引用。于是令牌既不会常驻内存，客户端轮询
+   * `snapshot` 的那条热路径也完全不碰它。
+   */
+  private async withCredentialLease<T>(fn: () => Promise<T>): Promise<T> {
+    await this.opts.beginCredentialLease?.()
+    try {
+      return await fn()
+    } finally {
+      this.opts.endCredentialLease?.()
+    }
   }
 
   /** 真正的拉取流程。 */
@@ -700,12 +726,29 @@ export class UsageService {
     }
   }
 
-  /** 当前可用的「项目」选项列表（不可用时返回空数组）。 */
+  /**
+   * 当前可用的「项目」选项列表（不可用时返回空数组）。
+   *
+   * **id 一律是不可逆短哈希**（与下发给浏览器、以及图表用的那份完全同源）。
+   *
+   * 为什么必须哈希、不能给原始 cwd：这个列表会经 `query_token_usage` 工具返回，
+   * 而**工具返回值直接进模型上下文** —— 也就是本机绝对路径会被当作对话内容发给
+   * 模型提供方。UI 只显示 `label`（末两级），完整路径对外没有任何用途。
+   *
+   * 这里曾刻意区分成「工具用原始 cwd、浏览器用哈希」两套语义（工具入参按 cwd 寻址），
+   * 但那等于把一个「本机目录结构外泄」的通道挂在 `exposeUsageToModel` 这个开关上：
+   * 一旦用户打开它，路径就随工具输出离开本机。现在两条路径统一走哈希，
+   * 出参里再也不会出现绝对路径。（`projectId` 入参因此也必须是哈希值。）
+   */
   async projectOptions(): Promise<Array<{ id: string; label: string; stat: ScopeStat }>> {
     const p = this.opts.projectProvider
     if (!p?.available()) return []
     try {
-      return (await p.list()).map((o) => ({ id: o.id, label: o.label, stat: toScopeStat(o.stat) }))
+      return (await p.list()).map((o) => ({
+        id: publicProjectId(o.id),
+        label: o.label,
+        stat: toScopeStat(o.stat),
+      }))
     } catch (e) {
       this.log('warn', `tlogs: 读取项目列表失败 ${e instanceof Error ? e.message : String(e)}`)
       return []
@@ -713,10 +756,7 @@ export class UsageService {
   }
 
   /**
-   * 供图表使用的项目列表：id 已换成不可逆短哈希（与下发到浏览器的一致）。
-   *
-   * 刻意与 `projectOptions()` 分开：后者是**模型工具**在用，其 id 是原始 cwd
-   * （工具入参按 cwd 寻址），两者的 id 语义不能混。
+   * 供图表使用的项目列表：id 是不可逆短哈希（与 `projectOptions()` 同一口径）。
    */
   private async projectList(): Promise<SeriesProject[]> {
     // 与「当前项目消耗」卡片同一个开关：关掉就彻底不遍历会话、不读 cwd，
