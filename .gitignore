@@ -24,3 +24,7 @@ deepseek_python_*.py
 # 本机私有拒绝清单：里面是**真实值**（真实用量数字、本机路径、邮箱），
 # 供 scripts/verify-secrets.mjs 做 0 命中检查。它本身就是敏感文件，绝不允许入库。
 .verify-secrets.local.txt
+
+# meow-memory 的实例数据（记忆库 memory.db 与会话日志）：属于本机运行期数据，
+# 不是本插件的产物；里面可能含工作区路径与对话记忆，绝不允许入库。
+.dsh-meow/
