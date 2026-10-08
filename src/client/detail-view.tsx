@@ -12,6 +12,7 @@
 import * as React from 'react'
 import { h } from './h.js'
 import { formatFull, formatMoneyFull } from './format.js'
+import { useT, type MessageKey } from './i18n/index.js'
 import { moneyTotal } from '../types.js'
 import type { StatRow } from '../types.js'
 
@@ -39,23 +40,26 @@ export interface StatTableProps {
 }
 
 export function StatTable(props: StatTableProps): React.ReactElement {
-  const { rows, emptyText = '暂无数据' } = props
+  const { rows, emptyText } = props
+  const t = useT()
   const [sort, setSort] = React.useState<{ key: SortKey; dir: 'asc' | 'desc' }>({
     key: 'totalTokens',
     dir: 'desc',
   })
 
   const hasCost = rows.some((r) => rowCost(r) !== undefined)
-  const columns: Array<{ key: SortKey; label: string }> = React.useMemo(() => {
-    const base: Array<{ key: SortKey; label: string }> = [
-      { key: 'label', label: '名称' },
-      { key: 'inputTokens', label: '输入' },
-      { key: 'outputTokens', label: '输出' },
-      { key: 'totalTokens', label: '总 Token' },
-      { key: 'requests', label: '请求' },
+  const columns: Array<{ key: SortKey; labelKey: MessageKey }> = React.useMemo(() => {
+    // 列头与日历汇总行、选中日明细用的是同一批词，直接复用 part A 的 `stat.*`，
+    // 免得同一句话在字典里出现两份。
+    const base: Array<{ key: SortKey; labelKey: MessageKey }> = [
+      { key: 'label', labelKey: 'table.name' },
+      { key: 'inputTokens', labelKey: 'stat.input' },
+      { key: 'outputTokens', labelKey: 'stat.output' },
+      { key: 'totalTokens', labelKey: 'stat.totalTokens' },
+      { key: 'requests', labelKey: 'stat.requests' },
     ]
     // 金额放最后一列：它是「补充信息」，指标列应保持原有的阅读顺序。
-    if (hasCost) base.push({ key: 'cost', label: '金额' })
+    if (hasCost) base.push({ key: 'cost', labelKey: 'stat.cost' })
     return base
   }, [hasCost])
 
@@ -67,7 +71,7 @@ export function StatTable(props: StatTableProps): React.ReactElement {
     )
   }
 
-  if (rows.length === 0) return <div className="tlogs-empty">{emptyText}</div>
+  if (rows.length === 0) return <div className="tlogs-empty">{emptyText ?? t('common.noData')}</div>
 
   return (
     <div className="tlogs-table-wrap">
@@ -78,12 +82,12 @@ export function StatTable(props: StatTableProps): React.ReactElement {
               <th
                 key={c.key}
                 onClick={() => toggleSort(c.key)}
-                title={`按${c.label}排序`}
+                title={t('table.sortBy', { column: t(c.labelKey) })}
                 aria-sort={
                   sort.key === c.key ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'
                 }
               >
-                {c.label}
+                {t(c.labelKey)}
                 {sort.key === c.key ? (sort.dir === 'asc' ? ' ↑' : ' ↓') : ''}
               </th>
             ))}

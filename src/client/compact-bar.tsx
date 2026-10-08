@@ -15,6 +15,7 @@
 import * as React from 'react'
 import { h, Fragment } from './h.js'
 import { formatFull, formatMoney, formatMoneyFull, formatNumber } from './format.js'
+import { useT } from './i18n/index.js'
 import type { UsageSnapshot } from '../types.js'
 
 export interface CompactBarProps {
@@ -31,6 +32,7 @@ export interface CompactBarProps {
 
 export function CompactBar(props: CompactBarProps): React.ReactElement {
   const { snapshot, numberFormat, wide, expanded, busy, onToggle, onRefresh } = props
+  const t = useT()
 
   const metrics = snapshot?.compact ?? []
   const stale = snapshot?.stale === true
@@ -50,13 +52,13 @@ export function CompactBar(props: CompactBarProps): React.ReactElement {
     // 侧边栏太窄放不下口径徽标，但悬停必须能说明「这个数不是平台账单给的」。
     const note =
       source === 'local'
-        ? '（本机口径：DSH 会话日志）'
+        ? t('bar.noteLocal')
         : source === 'merged'
-          ? '（平台 + 本机合并口径）'
+          ? t('bar.noteMerged')
           : ''
-    if (unit === 'requests') return `${label} ${formatFull(value)} 次请求${note}`
-    if (unit === 'money') return `${label} ${formatMoneyFull(value)} 元`
-    return `${label} ${formatFull(value)} tokens${note}`
+    if (unit === 'requests') return t('bar.titleRequests', { label, value: formatFull(value), note })
+    if (unit === 'money') return t('bar.titleMoney', { label, value: formatMoneyFull(value) })
+    return t('bar.titleTokens', { label, value: formatFull(value), note })
   }
 
   return (
@@ -65,7 +67,7 @@ export function CompactBar(props: CompactBarProps): React.ReactElement {
       <div
         className={wide ? 'tlogs-compact' : 'tlogs-compact tlogs-collapsed'}
         onClick={onToggle}
-        title="tlogs — DeepSeek 用量"
+        title={t('bar.title')}
       >
         {wide ? (
           <span className="tlogs-metrics">
@@ -92,7 +94,7 @@ export function CompactBar(props: CompactBarProps): React.ReactElement {
                 </span>
               </Fragment>
             ))}
-            {metrics.length === 0 ? <span className="tlogs-metric-label">暂无数据</span> : null}
+            {metrics.length === 0 ? <span className="tlogs-metric-label">{t('common.noData')}</span> : null}
           </span>
         ) : (
           <span
@@ -100,9 +102,9 @@ export function CompactBar(props: CompactBarProps): React.ReactElement {
             title={
               lead
                 ? lead.unit === 'money'
-                  ? `${lead.label} ${formatMoneyFull(lead.value)} 元`
-                  : `${lead.label} ${formatFull(lead.value)} tokens`
-                : 'tlogs — DeepSeek 用量'
+                  ? t('bar.titleMoney', { label: lead.label, value: formatMoneyFull(lead.value) })
+                  : t('bar.titleTokens', { label: lead.label, value: formatFull(lead.value), note: '' })
+                : t('bar.title')
             }
           >
             {lead
@@ -117,13 +119,13 @@ export function CompactBar(props: CompactBarProps): React.ReactElement {
           {stale ? (
             <span
               className="tlogs-stale"
-              title={snapshot?.error ?? '数据可能过期：最近一次刷新失败，当前显示缓存值'}
+              title={snapshot?.error ?? t('bar.staleTip')}
             >
               ⚠
             </span>
           ) : null}
           {busy ? (
-            <span className="tlogs-stale" title="正在刷新…">
+            <span className="tlogs-stale" title={t('bar.busyTip')}>
               ⟳
             </span>
           ) : null}
@@ -137,8 +139,8 @@ export function CompactBar(props: CompactBarProps): React.ReactElement {
               e.stopPropagation()
               onRefresh()
             }}
-            aria-label="刷新用量数据"
-            title="刷新用量"
+            aria-label={t('bar.refreshLabel')}
+            title={t('bar.refreshTitle')}
           >
             ↻
           </button>
@@ -151,8 +153,8 @@ export function CompactBar(props: CompactBarProps): React.ReactElement {
               onToggle()
             }}
             aria-expanded={expanded}
-            aria-label={expanded ? '收起 tlogs 面板' : '展开 tlogs 面板'}
-            title={expanded ? '收起' : '展开'}
+            aria-label={expanded ? t('bar.collapseLabel') : t('bar.expandLabel')}
+            title={expanded ? t('bar.collapse') : t('bar.expand')}
           >
             {expanded ? '▴' : '▾'}
           </button>

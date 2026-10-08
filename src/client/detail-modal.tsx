@@ -18,6 +18,8 @@ import { formatFull, formatMoneyFull, formatMoneyShort, formatNumber, localReaso
 import { moneyTotal } from '../types.js'
 import { StatTable } from './detail-view.js'
 import { ChartPanel } from './chart-panel.js'
+import { SettingsPanel } from './settings-panel.js'
+import { useT, type MessageKey, type Translator } from './i18n/index.js'
 import type { DetailData, MonthDetail, SeriesQuery, ScopeStat, StatRow, UsageSeries } from '../types.js'
 
 export interface DetailModalProps {
@@ -39,22 +41,36 @@ export interface DetailModalProps {
   onLoadSeries: (query: SeriesQuery) => void
 }
 
-type Tab = 'calendar' | 'charts' | 'models' | 'providers' | 'years' | 'months' | 'days'
+type Tab = 'calendar' | 'charts' | 'models' | 'providers' | 'years' | 'months' | 'days' | 'settings'
 
-const TABS: Array<{ id: Tab; label: string }> = [
-  { id: 'calendar', label: '日历' },
-  { id: 'charts', label: '图表' },
-  { id: 'models', label: '模型' },
+/**
+ * 页签表里存的是**键**而不是文案：文案要随语言切换实时变，
+ * 所以只能在渲染时翻译，不能在模块加载时定死。
+ * 「设置」放在最后 —— 那一排的末尾，与其它数据页签区分开。
+ */
+const TABS: Array<{ id: Tab; labelKey: MessageKey }> = [
+  { id: 'calendar', labelKey: 'tab.calendar' },
+  { id: 'charts', labelKey: 'tab.charts' },
+  { id: 'models', labelKey: 'tab.models' },
   // 「供应商」表来自本机会话日志（含平台账单看不到的火山方舟/小米/GLM…），
   // 紧跟在平台口径的「模型」表后面，两张表的口径差异在表头上写明。
-  { id: 'providers', label: '供应商' },
-  { id: 'years', label: '年' },
-  { id: 'months', label: '月' },
-  { id: 'days', label: '当月按天' },
+  { id: 'providers', labelKey: 'tab.providers' },
+  { id: 'years', labelKey: 'tab.years' },
+  { id: 'months', labelKey: 'tab.months' },
+  { id: 'days', labelKey: 'tab.days' },
+  { id: 'settings', labelKey: 'tab.settings' },
 ]
 
 /** 周一起始的星期标题（与插件「本周 = 周一至今」的口径一致）。 */
-const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日']
+const WEEKDAY_KEYS: MessageKey[] = [
+  'weekday.1',
+  'weekday.2',
+  'weekday.3',
+  'weekday.4',
+  'weekday.5',
+  'weekday.6',
+  'weekday.7',
+]
 
 const pad2 = (n: number): string => String(n).padStart(2, '0')
 const ymKey = (y: number, m: number): string => `${y}-${pad2(m)}`
@@ -97,16 +113,24 @@ const ZERO_COUNTERS: Counters = { inputTokens: 0, outputTokens: 0, totalTokens: 
  * 金额项**只在真的有金额数据时出现**：没有金额而硬显示 ¥0.00 会让人以为真没花钱，
  * 而实际是那一段还没回补到金额。
  */
-function statLine(stat: Counters): Array<{ label: string; text: string; full: string }> {
+function statLine(
+  stat: Counters,
+  t: Translator,
+): Array<{ key: MessageKey; label: string; text: string; full: string }> {
   const out = [
-    { label: '输入', text: formatNumber(stat.inputTokens, 'short'), full: formatFull(stat.inputTokens) },
-    { label: '输出', text: formatNumber(stat.outputTokens, 'short'), full: formatFull(stat.outputTokens) },
-    { label: '总 Token', text: formatNumber(stat.totalTokens, 'short'), full: formatFull(stat.totalTokens) },
-    { label: '请求', text: formatNumber(stat.requests, 'short'), full: formatFull(stat.requests) },
-  ]
+    { key: 'stat.input', label: t('stat.input'), text: formatNumber(stat.inputTokens, 'short'), full: formatFull(stat.inputTokens) },
+    { key: 'stat.output', label: t('stat.output'), text: formatNumber(stat.outputTokens, 'short'), full: formatFull(stat.outputTokens) },
+    { key: 'stat.totalTokens', label: t('stat.totalTokens'), text: formatNumber(stat.totalTokens, 'short'), full: formatFull(stat.totalTokens) },
+    { key: 'stat.requests', label: t('stat.requests'), text: formatNumber(stat.requests, 'short'), full: formatFull(stat.requests) },
+  ] as Array<{ key: MessageKey; label: string; text: string; full: string }>
   if (stat.cost) {
     const m = moneyTotal(stat.cost)
-    out.push({ label: '金额', text: formatMoneyShort(m), full: formatMoneyFull(m) })
+    out.push({
+      key: 'stat.cost',
+      label: t('stat.cost'),
+      text: formatMoneyShort(m),
+      full: formatMoneyFull(m),
+    })
   }
   return out
 }
@@ -118,6 +142,7 @@ function Calendar(props: {
   onSelectMonth: (year: number, month: number) => void
 }): React.ReactElement {
   const { months, monthDetail, onSelectMonth } = props
+  const t = useT()
 
   /**
    * 月份一律按 `YYYY-MM` 升序处理，**不依赖 host 的下发顺序**。
@@ -144,7 +169,7 @@ function Calendar(props: {
     onSelectMonth(ym.year, ym.month)
   }, [sorted, sel, onSelectMonth])
 
-  if (sorted.length === 0) return <div className="tlogs-empty">暂无数据</div>
+  if (sorted.length === 0) return <div className="tlogs-empty">{t('common.noData')}</div>
 
   const pick = (ym: { year: number; month: number }) => {
     setSel(ym)
@@ -201,9 +226,13 @@ function Calendar(props: {
     const heatCost = maxCost > 0 ? dayCost / maxCost : 0
     const heat = stat ? Math.round(Math.max(heatToken, heatCost) * 55) : 0
     const title = stat
-      ? `${date} · ${formatFull(value)} tokens · ${formatFull(stat.requests)} 次请求` +
-        (stat.cost ? ` · ${formatMoneyFull(dayCost)} 元` : '')
-      : `${date} · 无数据`
+      ? t('cal.cell', {
+          date,
+          tokens: formatFull(value),
+          requests: formatFull(stat.requests),
+          cost: stat.cost ? t('cal.cellCost', { money: formatMoneyFull(dayCost) }) : '',
+        })
+      : t('cal.cellNoData', { date })
     cells.push(
       <button
         key={date}
@@ -237,7 +266,7 @@ function Calendar(props: {
           className="tlogs-btn"
           onClick={() => step(-1)}
           disabled={idx <= 0}
-          aria-label="上一个月"
+          aria-label={t('cal.prevMonth')}
         >
           ‹
         </button>
@@ -248,12 +277,17 @@ function Calendar(props: {
             const ym = parseYm(e.target.value)
             if (ym) pick(ym)
           }}
-          aria-label="选择月份"
+          aria-label={t('cal.selectMonth')}
         >
           {sorted.map((r) => (
             <option key={r.key} value={r.key}>
-              {r.key}（{formatNumber(r.stat.totalTokens, 'short')} tokens
-              {r.stat.cost ? ` · ${formatMoneyShort(moneyTotal(r.stat.cost))}` : ''}）
+              {t('cal.option', {
+                key: r.key,
+                tokens: formatNumber(r.stat.totalTokens, 'short'),
+                cost: r.stat.cost
+                  ? t('cal.optionCost', { money: formatMoneyShort(moneyTotal(r.stat.cost)) })
+                  : '',
+              })}
             </option>
           ))}
         </select>
@@ -262,16 +296,18 @@ function Calendar(props: {
           className="tlogs-btn"
           onClick={() => step(1)}
           disabled={idx < 0 || idx >= sorted.length - 1}
-          aria-label="下一个月"
+          aria-label={t('cal.nextMonth')}
         >
           ›
         </button>
       </div>
 
       <div className="tlogs-cal-summary">
-        <span className="tlogs-cal-summary-title">{ymKey(current.year, current.month)} 合计</span>
-        {statLine(monthDetail?.stat ?? ZERO_COUNTERS).map((s) => (
-          <span key={s.label} className="tlogs-metric" title={s.full}>
+        <span className="tlogs-cal-summary-title">
+          {t('cal.monthTotal', { month: ymKey(current.year, current.month) })}
+        </span>
+        {statLine(monthDetail?.stat ?? ZERO_COUNTERS, t).map((s) => (
+          <span key={s.key} className="tlogs-metric" title={s.full}>
             <span className="tlogs-metric-label">{s.label}</span>
             <span className="tlogs-metric-value">{s.text}</span>
           </span>
@@ -281,15 +317,13 @@ function Calendar(props: {
       {byDate.size === 0 ? (
         // 兜底：确实拿不到该月逐日明细时，明确说明而不是渲染一片「—」。
         // （正常情况下插件会自动回补缺失的逐日明细，见 history.plan 的说明。）
-        <div className="tlogs-empty">
-          该月暂无逐日明细，仅显示上方月度合计。下一次自动刷新会尝试回补。
-        </div>
+        <div className="tlogs-empty">{t('cal.noDaily')}</div>
       ) : (
         <Fragment>
           <div className="tlogs-cal" role="grid">
-            {WEEKDAYS.map((w) => (
+            {WEEKDAY_KEYS.map((w) => (
               <div key={w} className="tlogs-cal-head">
-                {w}
+                {t(w)}
               </div>
             ))}
             {cells}
@@ -299,15 +333,15 @@ function Calendar(props: {
             {selectedDate && selected ? (
               <Fragment>
                 <span className="tlogs-cal-summary-title">{selectedDate}</span>
-                {statLine(selected).map((s) => (
-                  <span key={s.label} className="tlogs-metric" title={s.full}>
+                {statLine(selected, t).map((s) => (
+                  <span key={s.key} className="tlogs-metric" title={s.full}>
                     <span className="tlogs-metric-label">{s.label}</span>
                     <span className="tlogs-metric-value">{s.text}</span>
                   </span>
                 ))}
               </Fragment>
             ) : (
-              <span className="tlogs-hint">点击日历中的某一天查看当天明细。</span>
+              <span className="tlogs-hint">{t('cal.pickDay')}</span>
             )}
           </div>
         </Fragment>
@@ -319,6 +353,7 @@ function Calendar(props: {
 export function DetailModal(props: DetailModalProps): React.ReactElement {
   const { detail, monthDetail, series, seriesLoading, loading, busy, error, onClose, onRefresh, onSelectMonth, onLoadSeries } = props
   const [tab, setTab] = React.useState<Tab>('calendar')
+  const t = useT()
 
   // Esc 关闭：弹窗的基本可用性要求。
   React.useEffect(() => {
@@ -338,19 +373,19 @@ export function DetailModal(props: DetailModalProps): React.ReactElement {
         if (e.target === e.currentTarget) onClose()
       }}
     >
-      <div className="tlogs-modal" role="dialog" aria-modal="true" aria-label="tlogs 用量详细数据">
+      <div className="tlogs-modal" role="dialog" aria-modal="true" aria-label={t('modal.label')}>
         <div className="tlogs-modal-head">
-          <span className="tlogs-modal-title">用量详细数据</span>
+          <span className="tlogs-modal-title">{t('modal.title')}</span>
           <span className="tlogs-actions">
             <button type="button" className="tlogs-btn" onClick={onRefresh} disabled={busy}>
-              {busy ? '刷新中…' : '刷新'}
+              {busy ? t('common.refreshing') : t('common.refresh')}
             </button>
             <button
               type="button"
               className="tlogs-btn"
               onClick={onClose}
-              aria-label="关闭详细数据"
-              title="关闭（Esc）"
+              aria-label={t('modal.close')}
+              title={t('modal.closeTitle')}
             >
               ✕
             </button>
@@ -359,22 +394,25 @@ export function DetailModal(props: DetailModalProps): React.ReactElement {
 
         <div className="tlogs-modal-body">
           <div className="tlogs-tabs" role="tablist">
-            {TABS.map((t) => (
+            {TABS.map((item) => (
               <button
-                key={t.id}
+                key={item.id}
                 type="button"
                 role="tab"
-                aria-selected={t.id === tab}
-                className={t.id === tab ? 'tlogs-tab is-active' : 'tlogs-tab'}
-                onClick={() => setTab(t.id)}
+                aria-selected={item.id === tab}
+                className={item.id === tab ? 'tlogs-tab is-active' : 'tlogs-tab'}
+                onClick={() => setTab(item.id)}
               >
-                {t.label}
+                {t(item.labelKey)}
               </button>
             ))}
           </div>
 
-          {loading && !detail ? (
-            <div className="tlogs-empty">加载中…</div>
+          {tab === 'settings' ? (
+            // 设置页签**先于**加载分支：语言开关不该因为用量还没拉回来就点不开。
+            <SettingsPanel />
+          ) : loading && !detail ? (
+            <div className="tlogs-empty">{t('common.loading')}</div>
           ) : tab === 'calendar' ? (
             <Calendar
               months={detail?.months ?? []}
@@ -394,18 +432,27 @@ export function DetailModal(props: DetailModalProps): React.ReactElement {
                   所以它不是「有史以来」，而且它与上面那张平台「模型」表口径不同。 */}
               <div className="tlogs-hint">
                 {detail?.localRange
-                  ? `本机口径（DSH 会话日志${detail.localRange.sourceLabel ? ` · ${detail.localRange.sourceLabel}` : ''}）：` +
-                    `${detail.localRange.from} ~ ${detail.localRange.to} · ` +
-                    `${detail.localRange.days} 天 · ${detail.localRange.files} 个会话日志`
-                  : `本机口径不可用（${localReasonLabel(detail?.localUnavailable?.reason)}）`}
-                {'；含平台账单看不到的供应商（火山方舟 / 小米 / GLM / GPT…）'}
+                  ? t('providers.localRange', {
+                      source: detail.localRange.sourceLabel
+                        ? t('providers.localRangeSource', { source: detail.localRange.sourceLabel })
+                        : '',
+                      range: `${detail.localRange.from} ~ ${detail.localRange.to}`,
+                      days: detail.localRange.days,
+                      files: detail.localRange.files,
+                    })
+                  : t('providers.unavailable', {
+                      reason: localReasonLabel(detail?.localUnavailable?.reason),
+                    })}
+                {t('providers.coverage')}
               </div>
               <StatTable
                 rows={detail?.providers ?? []}
                 emptyText={
                   detail?.localUnavailable
-                    ? `本机口径不可用：${localReasonLabel(detail.localUnavailable.reason)}`
-                    : '本机口径暂无数据'
+                    ? t('providers.unavailableLong', {
+                        reason: localReasonLabel(detail.localUnavailable.reason),
+                      })
+                    : t('providers.empty')
                 }
               />
             </div>
@@ -413,9 +460,7 @@ export function DetailModal(props: DetailModalProps): React.ReactElement {
             <div>
               {/* 模型表混了两路口径，必须说明：平台行有官方金额，本机行（别家平台
                   的模型）没有金额、且只覆盖会话日志还在的那些天。 */}
-              <div className="tlogs-hint">
-                带「供应商 ·」前缀的行来自本机会话日志（平台账单看不到这些模型，因此没有金额）
-              </div>
+              <div className="tlogs-hint">{t('providers.modelsNote')}</div>
               <StatTable rows={detail?.models ?? []} />
             </div>
           ) : (

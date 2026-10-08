@@ -29,6 +29,7 @@ import {
   type ChartPoint,
   type MetricUnit,
 } from './chart-utils.js'
+import { useT, type MessageKey, type Translator } from './i18n/index.js'
 import type { Stat } from '../types.js'
 
 /** 三种图共用的画布宽度（viewBox 单位）；渲染时按 100% 宽等比缩放。 */
@@ -54,8 +55,8 @@ const lineInner = { w: VB_W - PAD_L - PAD_R, h: LINE_H - PAD_T - PAD_B }
 const barInner = { w: VB_W - PAD_L - PAD_R, h: BAR_H - PAD_T - BAR_PAD_B }
 
 /** 单位后缀。金额用「元」；请求用「次」；token 无后缀。 */
-function suffixOf(unit: MetricUnit): string {
-  return metricSuffix(unit)
+function suffixOf(unit: MetricUnit, t: Translator): string {
+  return metricSuffix(unit, t)
 }
 
 /**
@@ -70,12 +71,14 @@ function formatValue(v: number, unit: MetricUnit, mode: 'full' | 'short' = 'shor
 }
 
 /** 三段构成（所有图共用的「输入命中/未命中/输出」口径）。 */
-function breakdownOf(stat: Stat): Array<{ label: string; value: string }> {
+function breakdownOf(stat: Stat, t: Translator): Array<{ label: string; value: string }> {
   return [
-    { label: '命中', value: formatFull(stat.PROMPT_CACHE_HIT_TOKEN) },
-    { label: '未命中', value: formatFull(stat.PROMPT_CACHE_MISS_TOKEN + stat.PROMPT_TOKEN) },
-    { label: '输出', value: formatFull(stat.RESPONSE_TOKEN) },
-    ...(stat.REQUEST > 0 ? [{ label: '请求', value: `${formatFull(stat.REQUEST)} 次` }] : []),
+    { label: t('chart.breakdown.hit'), value: formatFull(stat.PROMPT_CACHE_HIT_TOKEN) },
+    { label: t('chart.breakdown.miss'), value: formatFull(stat.PROMPT_CACHE_MISS_TOKEN + stat.PROMPT_TOKEN) },
+    { label: t('stat.output'), value: formatFull(stat.RESPONSE_TOKEN) },
+    ...(stat.REQUEST > 0
+      ? [{ label: t('stat.requests'), value: `${formatFull(stat.REQUEST)}${t('chart.unit.requests')}` }]
+      : []),
   ]
 }
 
@@ -86,20 +89,21 @@ function InfoBar(props: {
   hint: string
 }): React.ReactElement {
   const { point, unit, hint } = props
+  const t = useT()
   if (!point) return <div className="tlogs-chart-info is-hint">{hint}</div>
   return (
     <div className="tlogs-chart-info">
       <span className="tlogs-chart-info-key">{point.full}</span>
       <span className="tlogs-metric">
         <span className="tlogs-metric-label">
-          {unit === 'requests' ? '请求' : unit === 'money' ? '金额' : '所选指标'}
+          {unit === 'requests' ? t('stat.requests') : unit === 'money' ? t('stat.cost') : t('chart.customMetric')}
         </span>
         <span className="tlogs-metric-value">
           {formatValue(point.value, unit, 'full')}
-          {suffixOf(unit)}
+          {suffixOf(unit, t)}
         </span>
       </span>
-      {breakdownOf(point.stat).map((e) => (
+      {breakdownOf(point.stat, t).map((e) => (
         <span key={e.label} className="tlogs-metric">
           <span className="tlogs-metric-label">{e.label}</span>
           <span className="tlogs-metric-value">{e.value}</span>
@@ -117,25 +121,26 @@ function InfoBar(props: {
  */
 function Summary(props: { values: number[]; unit: MetricUnit }): React.ReactElement {
   const { values, unit } = props
+  const t = useT()
   const positive = values.filter((v) => v > 0)
   const total = values.reduce((s, v) => s + v, 0)
   const max = positive.length > 0 ? Math.max(...positive) : 0
   const min = positive.length > 0 ? Math.min(...positive) : 0
   const avg = positive.length > 0 ? total / positive.length : 0
-  const items: Array<[string, number, boolean]> = [
-    ['合计', total, false],
-    ['最高', max, false],
-    ['最低', min, false],
-    ['均值', avg, true],
+  const items: Array<[MessageKey, number, boolean]> = [
+    ['chart.sum.total', total, false],
+    ['chart.sum.max', max, false],
+    ['chart.sum.min', min, false],
+    ['chart.sum.avg', avg, true],
   ]
   return (
     <div className="tlogs-chart-summary">
-      {items.map(([label, v, isAvg]) => (
-        <span key={label} className="tlogs-metric" title={formatValue(v, unit, 'full')}>
-          <span className="tlogs-metric-label">{label}</span>
+      {items.map(([labelKey, v, isAvg]) => (
+        <span key={labelKey} className="tlogs-metric" title={formatValue(v, unit, 'full')}>
+          <span className="tlogs-metric-label">{t(labelKey)}</span>
           <span className="tlogs-metric-value">
             {unit === 'tokens' && isAvg ? formatShort(v) : formatValue(v, unit, 'short')}
-            {isAvg || unit === 'tokens' ? '' : suffixOf(unit)}
+            {isAvg || unit === 'tokens' ? '' : suffixOf(unit, t)}
           </span>
         </span>
       ))}
@@ -207,10 +212,11 @@ export interface LineChartProps {
 
 export function LineChart(props: LineChartProps): React.ReactElement {
   const { points, unit, cumulative } = props
+  const t = useT()
   const [hover, setHover] = React.useState<number | null>(null)
 
   if (points.length === 0) {
-    return <div className="tlogs-empty">该范围内没有可用于绘图的数据</div>
+    return <div className="tlogs-empty">{t('chart.noPlotData')}</div>
   }
 
   const values = points.map((p) => p.value)
@@ -228,7 +234,7 @@ export function LineChart(props: LineChartProps): React.ReactElement {
         className="tlogs-chart-svg"
         viewBox={`0 0 ${VB_W} ${LINE_H}`}
         role="img"
-        aria-label="用量折线图"
+        aria-label={t('chart.aria.line')}
       >
         <g transform={`translate(${PAD_L}, ${PAD_T})`}>
           <Axis ticks={ticks} max={max} width={lineInner.w} height={lineInner.h} />
@@ -271,11 +277,7 @@ export function LineChart(props: LineChartProps): React.ReactElement {
       <InfoBar
         point={active}
         unit={unit}
-        hint={
-          cumulative
-            ? '折线为「累计」口径（自范围内首日之前累加）；悬停查看该点明细。'
-            : '悬停折线查看该时间点的明细。'
-        }
+        hint={cumulative ? t('chart.hint.lineCumulative') : t('chart.hint.line')}
       />
     </Fragment>
   )
@@ -293,10 +295,11 @@ export interface StackedBarProps {
  */
 export function StackedBarChart(props: StackedBarProps): React.ReactElement {
   const { points } = props
+  const t = useT()
   const [hover, setHover] = React.useState<number | null>(null)
 
   if (points.length === 0) {
-    return <div className="tlogs-empty">该范围内没有可用于绘图的数据</div>
+    return <div className="tlogs-empty">{t('chart.noPlotData')}</div>
   }
 
   const totals = points.map(
@@ -330,20 +333,20 @@ export function StackedBarChart(props: StackedBarProps): React.ReactElement {
       <div className="tlogs-legend">
         <span className="tlogs-legend-item">
           <i className="tlogs-swatch tlogs-swatch-c1" />
-          输入（缓存命中）
+          {t('chart.legend.hit')}
         </span>
         <span className="tlogs-legend-item">
           <i className="tlogs-swatch tlogs-swatch-c2" />
-          输入（缓存未命中）
+          {t('chart.legend.miss')}
         </span>
         <span className="tlogs-legend-item">
           <i className="tlogs-swatch tlogs-swatch-c3" />
-          输出
+          {t('stat.output')}
         </span>
         {reqMax > 0 ? (
           <span className="tlogs-legend-item">
             <i className="tlogs-swatch tlogs-swatch-req" />
-            请求数
+            {t('chart.metric.requests')}
           </span>
         ) : null}
       </div>
@@ -352,7 +355,7 @@ export function StackedBarChart(props: StackedBarProps): React.ReactElement {
         className="tlogs-chart-svg"
         viewBox={`0 0 ${VB_W} ${BAR_H}`}
         role="img"
-        aria-label="用量堆叠柱状图"
+        aria-label={t('chart.aria.bar')}
       >
         <g transform={`translate(${PAD_L}, ${PAD_T})`}>
           <Axis ticks={ticks} max={max} width={barInner.w} height={barInner.h} />
@@ -407,7 +410,7 @@ export function StackedBarChart(props: StackedBarProps): React.ReactElement {
       <InfoBar
         point={active}
         unit="tokens"
-        hint="悬停柱子查看该时间点的输入/输出构成；虚线为请求数（独立刻度）。"
+        hint={t('chart.hint.bar')}
       />
     </Fragment>
   )
@@ -440,11 +443,13 @@ export interface DonutChartProps {
  * 会退化**（起点与终点重合，SVG 直接不画），dasharray 天然正确。
  */
 export function DonutChart(props: DonutChartProps): React.ReactElement {
-  const { slices, centerLabel, centerValue, unit, emptyText = '该范围内没有构成数据' } = props
+  const { slices, centerLabel, centerValue, unit, emptyText } = props
+  const t = useT()
   const [hover, setHover] = React.useState<number | null>(null)
 
-  if (slices.length === 0) return <div className="tlogs-empty">{emptyText}</div>
-
+  if (slices.length === 0) {
+    return <div className="tlogs-empty">{emptyText ?? t('chart.empty.composition')}</div>
+  }
   const total = slices.reduce((s, x) => s + x.value, 0)
   const c = 2 * Math.PI * DONUT_R
   let before = 0
@@ -457,7 +462,7 @@ export function DonutChart(props: DonutChartProps): React.ReactElement {
           className="tlogs-donut"
           viewBox={`0 0 ${DONUT} ${DONUT}`}
           role="img"
-          aria-label="用量构成饼图"
+          aria-label={t('chart.aria.donut')}
         >
           <g transform={`rotate(-90 ${DONUT / 2} ${DONUT / 2})`}>
             {slices.map((s, i) => {
@@ -509,7 +514,7 @@ export function DonutChart(props: DonutChartProps): React.ReactElement {
               className={hover === i ? 'tlogs-legend-row is-active' : 'tlogs-legend-row'}
               onMouseEnter={() => setHover(i)}
               onMouseLeave={() => setHover((cur) => (cur === i ? null : cur))}
-              title={`${s.label} · ${formatFull(s.value)}${suffixOf(unit)}`}
+              title={`${s.label} · ${formatFull(s.value)}${suffixOf(unit, t)}`}
             >
               <i className={`tlogs-swatch tlogs-swatch-c${(s.colorIndex % 6) + 1}`} />
               <span className="tlogs-legend-name">{s.label}</span>
@@ -519,7 +524,7 @@ export function DonutChart(props: DonutChartProps): React.ReactElement {
           ))}
         </ul>
       </div>
-      <InfoBar point={null} unit={unit} hint="悬停环形或图例查看占比；构成项过多时尾部会合并为「其他」。" />
+      <InfoBar point={null} unit={unit} hint={t('chart.hint.donut')} />
     </Fragment>
   )
 }

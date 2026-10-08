@@ -10,6 +10,7 @@
  */
 
 import { TLOGS_CHANNEL } from '../types.js'
+import { t } from './i18n/index.js'
 
 /** 带 code 的错误，便于调用方按 code 分支。 */
 export interface RpcFailure extends Error {
@@ -34,7 +35,7 @@ export function makeRpc(ctx: {
 /** 调用并解开信封；失败时抛出带 `code` 的 Error。 */
 export async function callRpc<T>(rpc: Rpc | undefined, endpoint: string, payload?: unknown): Promise<T> {
   if (!rpc) {
-    const err = new Error('tlogs: 当前连接不支持 RPC（缺少 connection 服务）') as RpcFailure
+    const err = new Error(t('error.noConnection')) as RpcFailure
     err.code = 'no-connection'
     throw err
   }
@@ -44,7 +45,7 @@ export async function callRpc<T>(rpc: Rpc | undefined, endpoint: string, payload
     | undefined
 
   if (!res?.ok) {
-    const err = new Error(res?.error?.message ?? `tlogs: ${endpoint} 调用失败`) as RpcFailure
+    const err = new Error(res?.error?.message ?? t('error.rpcFailed', { endpoint })) as RpcFailure
     err.code = res?.error?.code
     throw err
   }

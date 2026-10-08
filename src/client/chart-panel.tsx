@@ -36,6 +36,7 @@ import {
   type ChartMetric,
 } from './chart-utils.js'
 import type { ChartRange, SeriesQuery, Stat, UsageSeries } from '../types.js'
+import { useT, type MessageKey } from './i18n/index.js'
 
 export interface ChartPanelProps {
   series: UsageSeries | null
@@ -45,24 +46,28 @@ export interface ChartPanelProps {
   onLoad: (query: SeriesQuery) => void
 }
 
-const RANGES: ReadonlyArray<{ id: ChartRange; label: string }> = [
-  { id: 'all', label: '有史以来' },
-  { id: 'custom', label: '自定义' },
-  { id: 'today', label: '今日' },
-  { id: 'week', label: '本周' },
-  { id: 'month', label: '本月' },
+/**
+ * 下面几张控制项表里存的是**键**而不是文案：文案必须随语言实时变，
+ * 只能在渲染时翻译（模块加载时定死的话，切语言后这一排按钮不会更新）。
+ */
+const RANGES: ReadonlyArray<{ id: ChartRange; labelKey: MessageKey }> = [
+  { id: 'all', labelKey: 'chart.range.all' },
+  { id: 'custom', labelKey: 'chart.range.custom' },
+  { id: 'today', labelKey: 'chart.range.today' },
+  { id: 'week', labelKey: 'chart.range.week' },
+  { id: 'month', labelKey: 'chart.range.month' },
   // 与控制台「时间维度」一致的两个滚动窗口。做成图表的范围预设后，
   // 用户可以直接对着控制台把同一条曲线比出来。
-  { id: 'last7', label: '近 7 天' },
-  { id: 'last30', label: '近 30 天' },
+  { id: 'last7', labelKey: 'chart.range.last7' },
+  { id: 'last30', labelKey: 'chart.range.last30' },
 ]
 
 type PieDim = 'model' | 'composition' | 'project'
 
-const PIE_DIMS: ReadonlyArray<{ id: PieDim; label: string }> = [
-  { id: 'model', label: '按模型' },
-  { id: 'composition', label: '输入/输出' },
-  { id: 'project', label: '按项目' },
+const PIE_DIMS: ReadonlyArray<{ id: PieDim; labelKey: MessageKey }> = [
+  { id: 'model', labelKey: 'chart.dim.model' },
+  { id: 'composition', labelKey: 'chart.dim.composition' },
+  { id: 'project', labelKey: 'chart.dim.project' },
 ]
 
 type LineMode = 'perBucket' | 'cumulative'
@@ -70,10 +75,10 @@ type LineMode = 'perBucket' | 'cumulative'
 /** 三张图作为「图表」页签下的**子标签**切换（同屏只画一张）。 */
 type ChartKind = 'line' | 'pie' | 'bar'
 
-const KINDS: ReadonlyArray<{ id: ChartKind; label: string }> = [
-  { id: 'line', label: '折线图' },
-  { id: 'pie', label: '饼状图' },
-  { id: 'bar', label: '柱状图' },
+const KINDS: ReadonlyArray<{ id: ChartKind; labelKey: MessageKey }> = [
+  { id: 'line', labelKey: 'chart.kind.line' },
+  { id: 'pie', labelKey: 'chart.kind.pie' },
+  { id: 'bar', labelKey: 'chart.kind.bar' },
 ]
 
 /** 本地今天（`YYYY-MM-DD`）。 */
@@ -130,6 +135,7 @@ function sumStats(list: Stat[]): Stat {
 
 export function ChartPanel(props: ChartPanelProps): React.ReactElement {
   const { series, loading, error, onLoad } = props
+  const t = useT()
 
   const [range, setRange] = React.useState<ChartRange>('all')
   const [from, setFrom] = React.useState('')
@@ -243,24 +249,25 @@ export function ChartPanel(props: ChartPanelProps): React.ReactElement {
     // 构成维度：金额走 Money 的五类拆分，其余走 Stat。
     if (metric === 'cost') {
       return [
-        { key: 'hit', label: '输入（缓存命中）', value: rangeMoney.PROMPT_CACHE_HIT_TOKEN },
+        { key: 'hit', label: t('chart.legend.hit'), value: rangeMoney.PROMPT_CACHE_HIT_TOKEN },
         {
           key: 'miss',
-          label: '输入（缓存未命中）',
+          label: t('chart.legend.miss'),
           value: rangeMoney.PROMPT_CACHE_MISS_TOKEN + rangeMoney.PROMPT_TOKEN,
         },
-        { key: 'out', label: '输出', value: rangeMoney.RESPONSE_TOKEN },
+        { key: 'out', label: t('stat.output'), value: rangeMoney.RESPONSE_TOKEN },
       ]
     }
     const s = projectSource ? sumStats((series.project?.points ?? []).map((p) => p.stat)) : rangeStat
     return [
-      { key: 'hit', label: '输入（缓存命中）', value: s.PROMPT_CACHE_HIT_TOKEN },
-      { key: 'miss', label: '输入（缓存未命中）', value: s.PROMPT_CACHE_MISS_TOKEN + s.PROMPT_TOKEN },
-      { key: 'out', label: '输出', value: s.RESPONSE_TOKEN },
+      { key: 'hit', label: t('chart.legend.hit'), value: s.PROMPT_CACHE_HIT_TOKEN },
+      { key: 'miss', label: t('chart.legend.miss'), value: s.PROMPT_CACHE_MISS_TOKEN + s.PROMPT_TOKEN },
+      { key: 'out', label: t('stat.output'), value: s.RESPONSE_TOKEN },
     ]
-  }, [series, effectiveDim, metric, projectSource, rangeStat, rangeMoney])
+  }, [series, effectiveDim, metric, projectSource, rangeStat, rangeMoney, t])
 
-  const slices = React.useMemo(() => pieSlices(pieItems, 8), [pieItems])
+  // 合并项（「其他」）在渲染时才翻译，因此把 t 的当前结果传进去并随 t 重算。
+  const slices = React.useMemo(() => pieSlices(pieItems, 8, t('chart.other')), [pieItems, t])
 
   const pickRange = (r: ChartRange) => {
     if (r === 'custom' && (!from || !to)) {
@@ -281,8 +288,8 @@ export function ChartPanel(props: ChartPanelProps): React.ReactElement {
         不会撑动这一行，也就不会推动下面的内容。
       */}
       <div className="tlogs-subtabs">
-        <span className="tlogs-ctl-group" role="group" aria-label="选择图形">
-          <span className="tlogs-ctl-label">图形</span>
+        <span className="tlogs-ctl-group" role="group" aria-label={t('chart.aria.kind')}>
+          <span className="tlogs-ctl-label">{t('chart.label.kind')}</span>
           {KINDS.map((k) => (
             <button
               key={k.id}
@@ -292,7 +299,7 @@ export function ChartPanel(props: ChartPanelProps): React.ReactElement {
               aria-pressed={k.id === kind}
               data-kind={k.id}
             >
-              {k.label}
+              {t(k.labelKey)}
             </button>
           ))}
         </span>
@@ -300,7 +307,7 @@ export function ChartPanel(props: ChartPanelProps): React.ReactElement {
         <span className="tlogs-ctl-group">
           {kind === 'pie' ? (
             <Fragment>
-              <span className="tlogs-ctl-label">构成</span>
+              <span className="tlogs-ctl-label">{t('chart.label.composition')}</span>
               {dims.map((d) => (
                 <button
                   key={d.id}
@@ -309,7 +316,7 @@ export function ChartPanel(props: ChartPanelProps): React.ReactElement {
                   onClick={() => setPieDim(d.id)}
                   aria-pressed={d.id === effectiveDim}
                 >
-                  {d.label}
+                  {t(d.labelKey)}
                 </button>
               ))}
             </Fragment>
@@ -318,8 +325,8 @@ export function ChartPanel(props: ChartPanelProps): React.ReactElement {
       </div>
 
       <div className="tlogs-chart-controls">
-        <span className="tlogs-ctl-group" role="group" aria-label="时间范围">
-          <span className="tlogs-ctl-label">范围</span>
+        <span className="tlogs-ctl-group" role="group" aria-label={t('chart.aria.range')}>
+          <span className="tlogs-ctl-label">{t('chart.label.range')}</span>
           {RANGES.map((r) => (
             <button
               key={r.id}
@@ -328,20 +335,20 @@ export function ChartPanel(props: ChartPanelProps): React.ReactElement {
               onClick={() => pickRange(r.id)}
               aria-pressed={r.id === range}
             >
-              {r.label}
+              {t(r.labelKey)}
             </button>
           ))}
         </span>
 
         <span className="tlogs-ctl-group">
-          <span className="tlogs-ctl-label">数据源</span>
+          <span className="tlogs-ctl-label">{t('chart.label.source')}</span>
           <select
             className="tlogs-input tlogs-chart-select"
             value={projectId}
             onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setProjectId(e.target.value)}
-            aria-label="选择数据源"
+            aria-label={t('chart.aria.source')}
           >
-            <option value="">平台账单（全部）</option>
+            <option value="">{t('chart.source.platform')}</option>
             {(series?.projects ?? []).map((p) => (
               <option key={p.id} value={p.id}>
                 {p.label}
@@ -353,47 +360,47 @@ export function ChartPanel(props: ChartPanelProps): React.ReactElement {
 
       <div className="tlogs-chart-controls">
         <span className="tlogs-ctl-group">
-          <span className="tlogs-ctl-label">指标</span>
+          <span className="tlogs-ctl-label">{t('chart.label.metric')}</span>
           <select
             className="tlogs-input tlogs-chart-select"
             value={metric}
             onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setMetric(e.target.value as ChartMetric)}
-            aria-label="选择指标"
+            aria-label={t('chart.aria.metric')}
           >
             {METRICS.map((m) => (
               <option key={m.id} value={m.id}>
-                {m.label}
+                {t(m.labelKey)}
               </option>
             ))}
           </select>
         </span>
 
         <span className="tlogs-ctl-group">
-          <span className="tlogs-ctl-label">粒度</span>
+          <span className="tlogs-ctl-label">{t('chart.label.grain')}</span>
           <select
             className="tlogs-input tlogs-chart-select"
             value={grain}
             onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setGrain(e.target.value as ChartGrain)}
-            aria-label="选择粒度"
+            aria-label={t('chart.aria.grain')}
             disabled={projectSource}
           >
             {GRAINS.map((g) => (
               <option key={g.id} value={g.id}>
-                {g.label}
+                {t(g.labelKey)}
               </option>
             ))}
           </select>
         </span>
 
         <span className="tlogs-ctl-group">
-          <span className="tlogs-ctl-label">口径</span>
+          <span className="tlogs-ctl-label">{t('chart.label.basis')}</span>
           <button
             type="button"
             className={mode === 'perBucket' ? 'tlogs-tab is-active' : 'tlogs-tab'}
             onClick={() => setMode('perBucket')}
             aria-pressed={mode === 'perBucket'}
           >
-            每期新增
+            {t('chart.mode.perBucket')}
           </button>
           <button
             type="button"
@@ -401,7 +408,7 @@ export function ChartPanel(props: ChartPanelProps): React.ReactElement {
             onClick={() => setMode('cumulative')}
             aria-pressed={mode === 'cumulative'}
           >
-            累计
+            {t('chart.mode.cumulative')}
           </button>
         </span>
       </div>
@@ -409,16 +416,16 @@ export function ChartPanel(props: ChartPanelProps): React.ReactElement {
       {range === 'custom' ? (
         <div className="tlogs-chart-controls">
           <span className="tlogs-ctl-group">
-            <span className="tlogs-ctl-label">从</span>
+            <span className="tlogs-ctl-label">{t('chart.label.from')}</span>
             <input
               type="date"
               className="tlogs-input tlogs-chart-date"
               value={from}
               max={to || todayKey()}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFrom(e.target.value)}
-              aria-label="起始日期"
+              aria-label={t('chart.aria.from')}
             />
-            <span className="tlogs-ctl-label">到</span>
+            <span className="tlogs-ctl-label">{t('chart.label.to')}</span>
             <input
               type="date"
               className="tlogs-input tlogs-chart-date"
@@ -426,7 +433,7 @@ export function ChartPanel(props: ChartPanelProps): React.ReactElement {
               min={from || undefined}
               max={todayKey()}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTo(e.target.value)}
-              aria-label="结束日期"
+              aria-label={t('chart.aria.to')}
             />
           </span>
         </div>
@@ -441,53 +448,61 @@ export function ChartPanel(props: ChartPanelProps): React.ReactElement {
             className="tlogs-metric"
             title={
               metric === 'cost'
-                ? `${formatMoneyFull(rangeCost)} 元`
+                ? `${formatMoneyFull(rangeCost)}${t('chart.unit.money')}`
                 : formatFull(metricValue(rangeStat, metric))
             }
           >
-            <span className="tlogs-metric-label">区间合计</span>
+            <span className="tlogs-metric-label">{t('chart.rangeTotal')}</span>
             <span className="tlogs-metric-value">
               {metric === 'cost'
                 ? formatMoneyShort(rangeCost)
                 : formatShort(metricValue(rangeStat, metric))}
-              {metricSuffix(unit)}
+              {metricSuffix(unit, t)}
             </span>
           </span>
           <span className="tlogs-metric">
-            <span className="tlogs-metric-label">请求</span>
-            <span className="tlogs-metric-value">{formatFull(rangeStat.REQUEST)} 次</span>
+            <span className="tlogs-metric-label">{t('stat.requests')}</span>
+            <span className="tlogs-metric-value">
+              {formatFull(rangeStat.REQUEST)}
+              {t('chart.unit.requests')}
+            </span>
           </span>
           {/* 金额回补未完成时曲线会把缺的月份当 0 画，必须说明。 */}
           {metric === 'cost' && series.costPartial ? (
-            <span className="tlogs-chart-scope-note">部分月份金额尚未回补，曲线可能偏低</span>
+            <span className="tlogs-chart-scope-note">{t('chart.costPartial')}</span>
           ) : null}
           <span className="tlogs-chart-scope-note">
             {projectSource
-              ? `项目维度：${projectPoints} 条快照（插件自启用当天起逐日记录，无法回溯更早）`
-              : `${buckets.length} 个${resolvedGrain === 'day' ? '天' : resolvedGrain === 'month' ? '月' : '年'}`}
+              ? t('chart.scope.snapshots', { n: projectPoints })
+              : t(
+                  resolvedGrain === 'day'
+                    ? 'chart.scope.bucketsDay'
+                    : resolvedGrain === 'month'
+                      ? 'chart.scope.bucketsMonth'
+                      : 'chart.scope.bucketsYear',
+                  { n: buckets.length },
+                )}
           </span>
-          {loading ? <span className="tlogs-chart-busy">更新中…</span> : null}
+          {loading ? <span className="tlogs-chart-busy">{t('chart.updating')}</span> : null}
         </div>
       ) : null}
 
       {error ? <div className="tlogs-error">{error}</div> : null}
 
       {!series ? (
-        <div className="tlogs-empty">{loading ? '加载中…' : '暂无图表数据'}</div>
+        <div className="tlogs-empty">{loading ? t('common.loading') : t('chart.noData')}</div>
       ) : (
         <Fragment>
           {series.partial && !projectSource ? (
             <div className="tlogs-hint">
-              注意：范围内有月份缺少逐日明细（接口只在部分月份返回按天数据）。
-              按天粒度会把这些月份画成断点；<b>按月 / 按年粒度不受影响</b>（用的是月度合计）。
+              {t('chart.partialNote.lead')}
+              <b>{t('chart.partialNote.bold')}</b>
+              {t('chart.partialNote.tail')}
             </div>
           ) : null}
 
           {projectSource && projectPoints < 2 ? (
-            <div className="tlogs-hint">
-              该项目目前只有 {projectPoints} 条快照：趋势线需要至少跨 2 天。
-              平台账单接口没有项目维度，历史无法回溯 —— 快照会在插件运行期间每天累积一条。
-            </div>
+            <div className="tlogs-hint">{t('chart.projectSnapshots', { n: projectPoints })}</div>
           ) : null}
 
           {/*
@@ -500,10 +515,10 @@ export function ChartPanel(props: ChartPanelProps): React.ReactElement {
               <div className="tlogs-chart-card">
                 <div className="tlogs-chart-head">
                   <span className="tlogs-chart-title">
-                    用量趋势
+                    {t('chart.title.line')}
                     <span className="tlogs-chart-sub">
-                      {metricDef.label}
-                      {mode === 'cumulative' ? ' · 累计' : ' · 每期'}
+                      {t(metricDef.labelKey)}
+                      {mode === 'cumulative' ? t('chart.sub.cumulative') : t('chart.sub.perBucket')}
                     </span>
                   </span>
                 </div>
@@ -513,13 +528,13 @@ export function ChartPanel(props: ChartPanelProps): React.ReactElement {
               <div className="tlogs-chart-card">
                 <div className="tlogs-chart-head">
                   <span className="tlogs-chart-title">
-                    构成占比
+                    {t('chart.title.pie')}
                     <span className="tlogs-chart-sub">
                       {effectiveDim === 'model'
-                        ? '按模型'
+                        ? t('chart.dim.model')
                         : effectiveDim === 'project'
-                          ? '按项目'
-                          : '输入命中 / 未命中 / 输出'}
+                          ? t('chart.dim.project')
+                          : t('chart.sub.composition')}
                     </span>
                   </span>
                 </div>
@@ -527,12 +542,12 @@ export function ChartPanel(props: ChartPanelProps): React.ReactElement {
                   slices={slices}
                   centerLabel={
                     effectiveDim === 'model'
-                      ? '按模型'
+                      ? t('chart.dim.model')
                       : effectiveDim === 'project'
-                        ? '按项目'
+                        ? t('chart.dim.project')
                         : projectSource
-                          ? (selectedProject?.label ?? '所选项目')
-                          : '区间合计'
+                          ? (selectedProject?.label ?? t('chart.selectedProject'))
+                          : t('chart.rangeTotal')
                   }
                   centerValue={
                     metric === 'cost'
@@ -543,9 +558,9 @@ export function ChartPanel(props: ChartPanelProps): React.ReactElement {
                   emptyText={
                     effectiveDim === 'project'
                       ? metric === 'cost'
-                        ? '项目用量来自本机会话投影，平台账单里没有它的金额'
-                        : '没有可用的项目数据（宿主未提供会话用量来源）'
-                      : '该范围内没有构成数据'
+                        ? t('chart.empty.projectCost')
+                        : t('chart.empty.project')
+                      : t('chart.empty.composition')
                   }
                 />
               </div>
@@ -553,8 +568,8 @@ export function ChartPanel(props: ChartPanelProps): React.ReactElement {
               <div className="tlogs-chart-card">
                 <div className="tlogs-chart-head">
                   <span className="tlogs-chart-title">
-                    用量分布
-                    <span className="tlogs-chart-sub">输入命中 / 未命中 + 输出，三段堆叠</span>
+                    {t('chart.title.bar')}
+                    <span className="tlogs-chart-sub">{t('chart.sub.bar')}</span>
                   </span>
                 </div>
                 <StackedBarChart points={points} />

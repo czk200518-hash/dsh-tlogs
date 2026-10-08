@@ -28,6 +28,7 @@
     "docs",
     "cordis.patch.yml",
     "README.md",
+    "README.en.md",
     "CHANGELOG.md",
     "LICENSE"
   ],
@@ -42,7 +43,8 @@
     "golden": "node scripts/golden-live.mjs",
     "verify:dsh": "node scripts/verify-dsh-manifest.mjs",
     "verify:secrets": "node scripts/verify-secrets.mjs",
-    "check": "npm run verify:secrets && npm run typecheck && npm run build && npm test",
+    "verify:i18n": "node scripts/verify-i18n.mjs",
+    "check": "npm run verify:secrets && npm run verify:i18n && npm run typecheck && npm run build && npm test",
     "prepublishOnly": "npm run check"
   },
   "dependencies": {

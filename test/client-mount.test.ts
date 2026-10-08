@@ -14,7 +14,7 @@
  * 因此这里的 `mount()` 也照做 —— 否则 rpc 注入缺失，测的就不是真实行为。
  */
 
-import { test, before, after, beforeEach } from 'node:test'
+import { test, before, after, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { JSDOM } from 'jsdom'
@@ -40,12 +40,17 @@ function defineGlobal(name: string, value: unknown): void {
 }
 
 before(() => {
-  dom = new JSDOM('<!doctype html><html><head></head><body><div id="root"></div></body></html>', {
+  // `lang="zh"` 是**必须**的：插件的「跟随系统」按 <html lang> → 浏览器语言 → 中文
+  // 解析，而 Node 里的 `navigator.language` 是 en-US。不写 lang，下面所有中文断言
+  // 都会因为界面解析成英文而失败（那测的就不是中文文案了）。
+  dom = new JSDOM('<!doctype html><html lang="zh"><head></head><body><div id="root"></div></body></html>', {
     pretendToBeVisual: true,
     url: 'http://127.0.0.1:19387/',
   })
   defineGlobal('window', dom.window)
   defineGlobal('document', dom.window.document)
+  // 语言偏好写在这里（真实浏览器里 window.localStorage 就是全局 localStorage）。
+  defineGlobal('localStorage', dom.window.localStorage)
   defineGlobal('HTMLElement', dom.window.HTMLElement)
   defineGlobal('Element', dom.window.Element)
   defineGlobal('Node', dom.window.Node)
@@ -69,9 +74,31 @@ after(() => {
 beforeEach(() => {
   for (const el of Array.from(dom.window.document.querySelectorAll('body > div'))) el.remove()
   dom.window.document.getElementById('tlogs-style')?.remove()
+  // 语言偏好存在 localStorage 里，而 bundle 每次物化都会重读它 ——
+  // 不清掉的话，某个用例切成 English 会污染后面所有用例的中文断言。
+  dom.window.localStorage.clear()
+  dom.window.document.documentElement.lang = 'zh'
   const root = dom.window.document.createElement('div')
   root.id = 'root'
   dom.window.document.body.appendChild(root)
+})
+
+/**
+ * 兜底卸载：用例中途抛错时，它自己的 `finally` 可能根本没跑到（例如断言写在了
+ * 挂载之前），留下的 React root 会继续持有 store 的定时器，**整个 `node --test`
+ * 进程就跑完不退出**。这里按「容器还在文档里」判断用例是否已自行清理。
+ */
+const mountedRoots: Array<{ root: Root; container: HTMLElement }> = []
+
+afterEach(async () => {
+  for (const item of mountedRoots.splice(0)) {
+    if (item.container.isConnected) {
+      await act(async () => {
+        item.root.unmount()
+      })
+    }
+    item.container.remove()
+  }
 })
 
 // ------------------------------------------------------------------ 假数据
@@ -545,14 +572,14 @@ test('渲染紧凑条，点击展开后就地展开面板，可进入详细视�
     const dialog = doc().querySelector('[role="dialog"]')
     assert.ok(dialog, '点「详细数据」应打开弹窗')
     assert.ok(dialog!.classList.contains('tlogs-modal'), '弹窗应渲染对话框容器')
-    // 页签：日历 + 图表 + 模型 / 供应商 / 年 / 月 / 当月按天
+    // 页签：日历 + 图表 + 模型 / 供应商 / 年 / 月 / 当月按天 + 设置
     // 「供应商」是本机口径的表（含平台账单看不到的供应商与其模型），与平台口径的
-    // 「模型」表并列，所以是 7 个页签。
+    // 「模型」表并列；「设置」放在最后，里面是插件的语言开关。
     const tabLabels = Array.from(dialog!.querySelectorAll('.tlogs-tab')).map((t) => t.textContent)
     assert.deepEqual(
       tabLabels,
-      ['日历', '图表', '模型', '供应商', '年', '月', '当月按天'],
-      '弹窗应有日历、图表、模型、供应商与年/月/当月按天页签',
+      ['日历', '图表', '模型', '供应商', '年', '月', '当月按天', '设置'],
+      '弹窗应有日历、图表、模型、供应商、年/月/当月按天与设置页签',
     )
     // 默认停在日历页，且日历是「周一起始」的 7 列网格
     assert.equal(dialog!.querySelectorAll('.tlogs-cal-head').length, 7, '日历应有 7 个星期标题')
@@ -1193,3 +1220,209 @@ test('紧凑条与其中的三角按钮各自只切换一次（父级 onClick �
     container.remove()
   }
 })
+
+// ------------------------------------------------------- 语言切换（设置页签）
+
+/**
+ * 挂载 → 展开 → 打开详细数据弹窗 → 切到「设置」页签。
+ *
+ * 返回的都是**惰性取值**（函数），因为切语言会重渲染，缓存下来的 DOM 引用与文本
+ * 会过期 —— 这正是这些用例要验证的东西。
+ */
+async function openSettingsTab(snapshot: UsageSnapshot = snapshotFixture()) {
+  const client = loadClientBundle()
+  const { ctx, registrations, rpcCalls } = makeCtx(snapshot)
+  client.apply(ctx)
+  const reg = registrations[0]!
+  const Component = reg.component as React.ComponentType<Record<string, unknown>>
+  const share = (reg.options.inject as () => Record<string, unknown>)()
+
+  const container = doc().createElement('div')
+  doc().body.appendChild(container)
+  const root = createRoot(container as unknown as Element)
+  mountedRoots.push({ root, container })
+
+  const click = async (el: Element) => {
+    await act(async () => {
+      el.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
+      await new Promise((r) => setTimeout(r, 0))
+    })
+  }
+
+  await act(async () => {
+    root.render(React.createElement(Component, { ...share, wide: true }))
+    await new Promise((r) => setTimeout(r, 0))
+  })
+  await click(container.querySelector('.tlogs-compact')!)
+  // 「详细数据」按钮按**类名**找，不按文案：这些用例会切到 English，
+  // 按中文文案找按钮在英文界面下必然找不到。
+  const detailBtn = container.querySelector('.tlogs-footer-actions > button')
+  assert.ok(detailBtn, '展开面板底部应有「详细数据」按钮')
+  await click(detailBtn!)
+  assert.ok(doc().querySelector('[role="dialog"]'), '应打开详细数据弹窗')
+
+  const tabs = () => Array.from(doc().querySelectorAll('.tlogs-tab'))
+  const tabLabels = () => tabs().map((e) => e.textContent)
+  const pickTab = async (label: string) => {
+    const tab = tabs().find((e) => e.textContent === label)
+    assert.ok(tab, `应有「${label}」页签`)
+    await click(tab!)
+  }
+  const dialogText = () => doc().querySelector('[role="dialog"]')?.textContent ?? ''
+  /** 点某个语言选项（点 input 本身，React 的 radio 走 click 分发 onChange）。 */
+  const pickLang = async (value: string) => {
+    const radio = doc().querySelector(
+      `.tlogs-settings-radio[value="${value}"]`,
+    ) as unknown as HTMLInputElement
+    assert.ok(radio, `设置页应有 ${value} 选项`)
+    await click(radio)
+  }
+
+  return { container, root, rpcCalls, tabLabels, pickTab, dialogText, pickLang }
+}
+
+test('设置页签：三种语言模式，切换即时生效并持久化', async () => {
+  const { root, container, tabLabels, pickTab, dialogText, pickLang, rpcCalls } =
+    await openSettingsTab()
+  try {
+    await pickTab('设置')
+    const text = dialogText()
+    assert.match(text, /语言/, '设置页应有「语言」标题')
+    for (const label of ['跟随系统', '中文', 'English']) {
+      assert.ok(text.includes(label), `设置页应有「${label}」选项`)
+    }
+    // 默认「跟随系统」，而 <html lang="zh"> → 生效语言是中文
+    const autoRadio = doc().querySelector('.tlogs-settings-radio[value="auto"]') as HTMLInputElement
+    assert.equal(autoRadio.checked, true, '默认应是「跟随系统」')
+    assert.match(text, /当前生效：中文/, '跟随系统时应解析成中文')
+
+    // 未做任何选择前不应写存储（默认值不落盘）
+    assert.equal(dom.window.localStorage.getItem('tlogs.lang'), null, '默认值不该写进存储')
+
+    // ---- 切到 English：整个插件的文案立即变英文（含其它页签） ----
+    const callsBefore = rpcCalls.length
+    await pickLang('en')
+    assert.deepEqual(
+      tabLabels(),
+      ['Calendar', 'Charts', 'Models', 'Providers', 'Years', 'Months', 'Days', 'Settings'],
+      '切到 English 后页签必须整体变英文',
+    )
+    assert.equal(
+      dom.window.localStorage.getItem('tlogs.lang'),
+      'en',
+      '语言选择必须持久化，插件重启后保持',
+    )
+    assert.match(dialogText(), /Active now: English/, '英文界面下「当前生效」也应是英文')
+    assert.equal(
+      rpcCalls.length,
+      callsBefore,
+      '切语言只影响本地渲染，不得向 host 发任何请求',
+    )
+
+    // ---- 切回「跟随系统」→ 按 <html lang> 回到中文 ----
+    await pickLang('auto')
+    assert.deepEqual(
+      tabLabels(),
+      ['日历', '图表', '模型', '供应商', '年', '月', '当月按天', '设置'],
+      '回到「跟随系统」应按宿主语言渲染中文',
+    )
+    assert.equal(dom.window.localStorage.getItem('tlogs.lang'), 'auto')
+  } finally {
+    await act(async () => {
+      root.unmount()
+    })
+    container.remove()
+  }
+})
+
+test('切到 English 后图表页签的文案也跟着变（防住 useMemo 漏依赖这类「文案冻住」的坑）', async () => {
+  const { root, container, pickTab, pickLang, dialogText } = await openSettingsTab()
+  try {
+    await pickTab('设置')
+    await pickLang('en')
+    await pickTab('Charts')
+    // 图表页挂载后要向 host 取数，跑两轮微任务等结果回填
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0))
+      await new Promise((r) => setTimeout(r, 0))
+    })
+
+    const text = dialogText()
+    // 控制项与卡片标题都来自字典；这些标签在渲染时取，漏了 t 依赖就会停在中文字串
+    for (const label of ['Usage trend', 'All time', 'Chart', 'Range', 'Source', 'Metric', 'Grain']) {
+      assert.ok(text.includes(label), `英文界面下图表页应包含「${label}」，实际：${text.slice(0, 200)}`)
+    }
+    assert.equal(/用量趋势|有史以来|按模型/.test(text), false, '英文界面下不该残留中文图表文案')
+  } finally {
+    await act(async () => {
+      root.unmount()
+    })
+    container.remove()
+  }
+})
+
+test('「跟随系统」在每次重渲染时读取宿主语言（<html lang>），识别不了则回退中文', async () => {
+  const { root, container, tabLabels, pickTab, dialogText } = await openSettingsTab()
+  try {
+    await pickTab('设置')
+    assert.match(dialogText(), /当前生效：中文/)
+
+    /*
+     * 宿主把界面切成英文（DSH 的 locale 服务会写 <html lang>）。
+     * 「跟随系统」是在**翻译时现算**的，所以这里点一下另一个页签触发重渲染 ——
+     * 这正是实现上的取舍：不常驻 MutationObserver（它会在渲染之外触发 React 更新，
+     * 让 jsdom 里的测试进程跑完不退出），宿主改语言后由下一次重渲染跟上。
+     */
+    dom.window.document.documentElement.lang = 'en'
+    await pickTab('日历')
+    assert.deepEqual(
+      tabLabels(),
+      ['Calendar', 'Charts', 'Models', 'Providers', 'Years', 'Months', 'Days', 'Settings'],
+      '「跟随系统」应在重渲染后跟着 <html lang> 变英文',
+    )
+
+    /*
+     * 宿主语言与浏览器语言都识别不了（日语）→ 回退中文。
+     * 两级都要是不支持的语种：解析顺序是 `<html lang>` → `navigator.languages`，
+     * 只把宿主语言设成日语的话，还会落到 Node 里那个 en-US 的 navigator 上。
+     */
+    defineGlobal('navigator', { languages: ['ja-JP', 'ja'], language: 'ja-JP' })
+    dom.window.document.documentElement.lang = 'ja'
+    // 点一个**不同的**页签才会重渲染（点当前页签 setState 同值会被 React 跳过）
+    await pickTab('Settings')
+    assert.equal(tabLabels()[0], '日历', '无法识别的语言环境应回退中文')
+    await act(async () => {
+      dom.window.document.documentElement.lang = 'zh'
+      await new Promise((r) => setTimeout(r, 0))
+    })
+  } finally {
+    dom.window.document.documentElement.lang = 'zh'
+    await act(async () => {
+      root.unmount()
+    })
+    container.remove()
+  }
+})
+
+test('显式选择优先于宿主语言，且重启后（重新物化）保持上次选择', async () => {
+  // 模拟「上次选了 English」：存储里有值，宿主语言却是中文。
+  dom.window.localStorage.setItem('tlogs.lang', 'en')
+  const { root, container, tabLabels, pickTab, dialogText } = await openSettingsTab()
+  try {
+    assert.equal(
+      tabLabels()[0],
+      'Calendar',
+      '显式选择必须压过「跟随系统」，否则用户的选择会被宿主语言覆盖',
+    )
+    await pickTab('Settings')
+    const radio = doc().querySelector('.tlogs-settings-radio[value="en"]') as HTMLInputElement
+    assert.equal(radio.checked, true, '重启后设置页应回显上次选择')
+    assert.match(dialogText(), /Active now: English/)
+  } finally {
+    await act(async () => {
+      root.unmount()
+    })
+    container.remove()
+  }
+})
+

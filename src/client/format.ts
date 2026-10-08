@@ -1,35 +1,44 @@
 /**
  * tlogs — 数字格式化（需求 1.3「数字使用千分位或 K/M/B 缩写，hover 显示精确值」）。
  *
- * 纯函数，无 DOM/React 依赖，便于单测。
+ * 纯函数：不碰 DOM、不渲染组件，只按当前语言产出字符串（金额档位、原因标签走
+ * `i18n/index.js`）。因此可以在单测里直接调用 —— 注意语言是从环境解析的，
+ * Node 里 `navigator.language` 是 en-US，所以单测要断言中文得先 `setLangPref('zh')`。
  */
+
+import { getLang, t as translate, type Translator } from './i18n/index.js'
 
 /**
  * 本机口径不可用的原因（英文枚举，来自 host 侧 `SessionUsageStore`）转成一句人话。
  *
  * 放在这里而不是某个组件里：展开面板与详细数据的「供应商」页签都要用，
  * 两处文案必须一致（同一个原因在两处显示不同的说法只会让人更困惑）。
+ *
+ * `tr` 之所以是参数：渲染路径必须传组件里的 `t`（`useT()`），否则切语言时这句
+ * 不会跟着变；缺省值是模块级 `t`，给非渲染调用方（事件回调、日志）一个合理兜底。
  */
-export function localReasonLabel(reason: string | undefined): string {
+export function localReasonLabel(reason: string | undefined, tr: Translator = translate): string {
   switch (reason) {
     case undefined:
-      return '尚未扫描'
+      return tr('error.reason.notScanned')
     case 'disabled':
-      return '配置里已关闭 localUsage'
+      return tr('error.reason.disabled')
     case 'no-session-logs':
-      return '未找到会话日志（候选目录都不存在）'
+      return tr('error.reason.noSessionLogs')
     case 'zstd-unavailable':
-      return '当前运行时不支持 zstd（需要 Node 22.15+ / 24）'
+      return tr('error.reason.zstd')
     case 'not-scanned':
-      return '尚未扫描'
+      return tr('error.reason.notScanned')
     case 'restored-empty':
-      return '缓存里没有可用数据'
+      return tr('error.reason.restoredEmpty')
     case 'no-usage-in-window':
-      return '日志里没有窗口内的用量'
+      return tr('error.reason.noUsageInWindow')
     case 'session-log-read-failed':
-      return '会话日志读取失败'
+      return tr('error.reason.sessionLogReadFailed')
     default:
-      return reason.startsWith('sessions-dir-unreadable') ? '会话目录不可读' : '读取失败'
+      return reason.startsWith('sessions-dir-unreadable')
+        ? tr('error.reason.sessionsDir')
+        : tr('error.reason.readFailed')
   }
 }
 
@@ -108,22 +117,31 @@ export function formatMoney(n: number): string {
 }
 
 /**
- * 金额的缩写写法：`¥1.23万`。
+ * 金额的缩写写法：中文 `¥1.23万` / `¥1.2亿`，英文 `¥12.3K` / `¥1.2M`。
  *
- * 中文习惯用「万」而不是 K/M，因此与 token 的 `formatShort` 分开实现。
- * 不足 1 万时退回两位小数的精确写法（`¥172.48` 比 `¥0.02万` 好读得多）。
+ * 中文习惯用「万 / 亿」而不是 K/M；英文里 1e8 也不是 B（billion = 1e9），
+ * 所以两套缩放阈值按语言分开，后缀走字典（`money.shortSmall` / `money.shortBig`）。
+ * 不足一档时退回两位小数的精确写法（`¥172.48` 比 `¥0.02万` 好读得多）。
+ *
+ * 这里不把 `t` 当参数：调用方很多（含详细数据弹窗），而**缩放阈值本身**也要跟着
+ * 语言走，于是统一在调用时读一次 `getLang()`。组件渲染时每次重渲染都会重新调用本函数，
+ * 因此切语言后显示会跟着更新。
  */
 export function formatMoneyShort(n: number): string {
   if (!Number.isFinite(n)) return '¥0'
   const abs = Math.abs(n)
   const sign = n < 0 ? '-' : ''
-  if (abs >= 1e8) return `${sign}¥${(abs / 1e8).toFixed(2).replace(/\.?0+$/, '')}亿`
-  if (abs >= 1e4) {
-    const wan = abs / 1e4
-    const s = wan < 100 ? wan.toFixed(2).replace(/\.?0+$/, '') : String(Math.round(wan))
-    return `${sign}¥${s}万`
-  }
+  const en = getLang() === 'en'
+  const big = en ? 1e6 : 1e8
+  const small = en ? 1e3 : 1e4
+  if (abs >= big) return `${sign}¥${scaledMoney(abs / big)}${translate('money.shortBig')}`
+  if (abs >= small) return `${sign}¥${scaledMoney(abs / small)}${translate('money.shortSmall')}`
   return formatMoney(n)
+}
+
+/** 万 / 亿（K / M）档位的数字写法：< 100 保留两位小数并去掉尾随 0，否则取整。 */
+function scaledMoney(v: number): string {
+  return v < 100 ? v.toFixed(2).replace(/\.?0+$/, '') : String(Math.round(v))
 }
 
 /** 按配置选择金额格式。 */

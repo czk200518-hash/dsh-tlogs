@@ -9,6 +9,7 @@
 import * as React from 'react'
 import { h, Fragment } from './h.js'
 import { formatFull, formatMoney, formatMoneyFull, formatNumber, localReasonLabel } from './format.js'
+import { useT, type MessageKey, type Translator } from './i18n/index.js'
 import { moneyTotal } from '../types.js'
 import type { AuthState, CardData, CardSourceInfo, UsageSnapshot } from '../types.js'
 
@@ -25,13 +26,13 @@ export interface ExpandPanelProps {
   onLogout: () => void
 }
 
-/** 凭据来源的中文名（对应 `AuthState.source`）。 */
-const SOURCE_LABEL: Record<string, string> = {
-  env: '环境变量',
-  config: '插件配置',
-  credentials: '本机凭据（手动填写 / 登录）',
-  'platform-session': 'DSH 账号登录态（自动复用）',
-  'desktop-login': '内置登录窗口',
+/** 凭据来源的文案键（对应 `AuthState.source`）。 */
+const SOURCE_LABEL: Record<string, MessageKey> = {
+  env: 'panel.source.env',
+  config: 'panel.source.config',
+  credentials: 'panel.source.credentials',
+  'platform-session': 'panel.source.platformSession',
+  'desktop-login': 'panel.source.desktopLogin',
 }
 
 /*
@@ -50,13 +51,19 @@ const SOURCE_LABEL: Record<string, string> = {
  * 实测就是这样（北京 00:20 的调用全部记进平台桶 `2026-10-07`），凌晨看到「今日 0」
  * 的困惑正是这么来的。
  *
- * 平台桶的边界在**北京时区里是恒定值**（永远 08:00），所以这句写死是准确的：
- * 换到别的时区跑，变的是「本机几点换日」，那句话在 tooltip 里按真实时区解释。
+ * 平台桶的边界在**北京时区里是恒定值**（永远 08:00），所以中文那句是准确的：
+ * 换到别的时区跑，变的是「本机几点换日」，那句在 tooltip 里按真实时区解释。
+ * 文案已外置成键（原文一字未改），渲染时取，因此切语言会跟着更新。
  */
-const TIME_BASIS_LABEL = '统计口径：平台日（UTC）· 北京 08:00 换日'
+const TIME_BASIS_KEY: MessageKey = 'panel.timeBasis'
 
-/** 时间口径那行的 tooltip：按本机真实时区解释换日时刻。 */
-function dayBasisTip(): { tip: string } {
+/**
+ * 时间口径那行的 tooltip：按本机真实时区解释换日时刻。
+ *
+ * `t` 由调用方传入（组件里是 `useT()` 的返回值）—— tooltip 是渲染产物，
+ * 用模块级 `t` 会让它停在旧语言上。
+ */
+function dayBasisTip(t: Translator): { tip: string } {
   /** getTimezoneOffset() 是「UTC − 本地」的分钟数，取反得到本地相对 UTC 的偏移。 */
   const offsetMin = -new Date().getTimezoneOffset()
   /** 把「相对 UTC 的分钟偏移」折成 `HH:MM`。 */
@@ -72,21 +79,12 @@ function dayBasisTip(): { tip: string } {
    * 官方**计费**按北京时间日（00:00 换日），而官方**用量接口**的日桶按 UTC
    * （北京 08:00 换日）。两者在跨日处最多差 8 小时的用量。
    */
-  const billing =
-    '官方账单按北京时间日（0 点）结算，本插件的日桶按接口口径（UTC 日）—— ' +
-    '两者在跨日处最多差 8 小时的用量。'
+  const billing = t('panel.dayBasis.billing')
 
   if (offsetMin === 0) {
-    return {
-      tip: `平台接口的 days[] 按 UTC 日切桶；本机时区就是 UTC，所以本机 00:00 换日。${billing}`,
-    }
+    return { tip: t('panel.dayBasis.utc', { billing }) }
   }
-  return {
-    tip:
-      `平台接口的 days[] 按 UTC 日切桶：本机 ${start} 换日，` +
-      `「今日」= ${start} ～ 次日 ${end}（不是本机 00:00 换日）。` +
-      `当周/当月同理（周一 00:00 / 1 日 00:00 均按 UTC 计）。${billing}`,
-  }
+  return { tip: t('panel.dayBasis.local', { start, end, billing }) }
 }
 
 /** 数据卡片：标题 + 总量（token 与 ¥）+ 输入/输出/请求拆分。 */
@@ -97,6 +95,7 @@ function Card(props: {
   onCycle?: () => void
 }): React.ReactElement {
   const { card, numberFormat, selectedId, onCycle } = props
+  const t = useT()
   const clickable = typeof onCycle === 'function' && (card.options?.length ?? 0) > 1
   const current = card.options?.find((o) => o.id === selectedId) ?? card.options?.[0]
   const stat = current?.stat ?? card.stat
@@ -108,9 +107,9 @@ function Card(props: {
     cost === undefined
       ? ''
       : [
-          `${card.label} 合计 ${formatMoneyFull(cost)} 元`,
-          `输入 ${formatMoneyFull(inputCost(stat))} 元`,
-          `输出 ${formatMoneyFull(outputCost(stat))} 元`,
+          t('panel.moneyTip.total', { label: card.label, money: formatMoneyFull(cost) }),
+          t('panel.moneyTip.input', { money: formatMoneyFull(inputCost(stat)) }),
+          t('panel.moneyTip.output', { money: formatMoneyFull(outputCost(stat)) }),
         ].join('\n')
 
   return (
@@ -129,17 +128,17 @@ function Card(props: {
             }
           : undefined
       }
-      title={clickable ? '点击切换项目' : undefined}
+      title={clickable ? t('panel.cycle.title') : undefined}
     >
       <div className="tlogs-card-head">
         {/* 口径细节走 tooltip：两路合并是常态，卡面只在「含平台看不到的第三方用量」时标一下。 */}
-        <span className="tlogs-card-title" title={card.source ? sourceTip(card.source) : undefined}>
+        <span className="tlogs-card-title" title={card.source ? sourceTip(card.source, t) : undefined}>
           {card.label}
           {current && (card.options?.length ?? 0) > 1 ? ` · ${current.label}` : ''}
         </span>
         {card.source && card.source.otherProviders.length > 0 ? (
-          <span className="tlogs-src" title={sourceTip(card.source)}>
-            第三方
+          <span className="tlogs-src" title={sourceTip(card.source, t)}>
+            {t('panel.thirdParty')}
           </span>
         ) : null}
         {card.stale ? <span className="tlogs-stale">⚠</span> : null}
@@ -161,15 +160,15 @@ function Card(props: {
           </span>
           <span className="tlogs-card-split">
             <span>
-              <span className="tlogs-split-label">输入</span>
+              <span className="tlogs-split-label">{t('stat.input')}</span>
               <b title={formatFull(stat.inputTokens)}>{formatNumber(stat.inputTokens, numberFormat)}</b>
             </span>
             <span>
-              <span className="tlogs-split-label">输出</span>
+              <span className="tlogs-split-label">{t('stat.output')}</span>
               <b title={formatFull(stat.outputTokens)}>{formatNumber(stat.outputTokens, numberFormat)}</b>
             </span>
             <span>
-              <span className="tlogs-split-label">请求</span>
+              <span className="tlogs-split-label">{t('stat.requests')}</span>
               <b title={formatFull(stat.requests)}>{formatNumber(stat.requests, numberFormat)}</b>
             </span>
           </span>
@@ -198,34 +197,38 @@ function outputCost(stat: CardData['stat']): number {
  * 平台账单看不到的第三方供应商），常年挂徽标只会挤掉标题、制造噪声。卡面只在
  * 「这个窗口含平台账单看不到的第三方用量」时标一下，其余细节放这里。
  */
-function sourceTip(s: CardSourceInfo): string {
+function sourceTip(s: CardSourceInfo, t: Translator): string {
   const head =
     s.kind === 'local'
-      ? '本机口径（DSH 会话日志）：实时，覆盖本机所有供应商'
+      ? t('panel.sourceTip.local')
       : s.kind === 'merged'
-        ? '平台账单 + 本机口径合并'
-        : '平台账单口径'
+        ? t('panel.sourceTip.merged')
+        : t('panel.sourceTip.platform')
   const lines = [
     head,
-    `平台 ${formatFull(s.platformTokens)} tokens`,
-    `本机 ${formatFull(s.localTokens)} tokens（其中 DeepSeek 通道 ${formatFull(s.localDeepseekTokens)}）`,
+    t('panel.sourceTip.platformTokens', { n: formatFull(s.platformTokens) }),
+    t('panel.sourceTip.localTokens', {
+      n: formatFull(s.localTokens),
+      deepseek: formatFull(s.localDeepseekTokens),
+    }),
   ]
   if (s.otherProviders.length > 0) {
     lines.push(
-      '平台看不到的供应商：' +
-        s.otherProviders
+      t('panel.sourceTip.other', {
+        list: s.otherProviders
           .slice(0, 4)
           .map((p) => `${p.provider} ${formatFull(p.tokens)}`)
-          .join('、'),
+          .join(t('list.separator')),
+      }),
     )
   }
-  if (s.costPending) lines.push('金额是平台计价，当天结算滞后约 10~30 分钟，会略偏小')
+  if (s.costPending) lines.push(t('panel.sourceTip.costPending'))
   return lines.join('\n')
 }
 
 /** 本机口径不可用的原因（英文枚举）转成一句人话；与详细数据「供应商」页签共用。 */
-function reasonLabel(reason: string | undefined): string {
-  return localReasonLabel(reason)
+function reasonLabel(reason: string | undefined, t: Translator): string {
+  return localReasonLabel(reason, t)
 }
 
 export function ExpandPanel(props: ExpandPanelProps): React.ReactElement {
@@ -242,6 +245,7 @@ export function ExpandPanel(props: ExpandPanelProps): React.ReactElement {
     onLogout,
   } = props
 
+  const t = useT()
   const [showTokenInput, setShowTokenInput] = React.useState(false)
   const [draft, setDraft] = React.useState('')
   const [selections, setSelections] = React.useState<Record<number, string>>({})
@@ -253,7 +257,7 @@ export function ExpandPanel(props: ExpandPanelProps): React.ReactElement {
    */
   const loginAvailable = snapshot?.display.loginAvailable !== false
   /** 平台日（UTC 日）在本机时区对应的时间段（tooltip 用）。 */
-  const basis = dayBasisTip()
+  const basis = dayBasisTip(t)
 
   const cycle = (index: number, card: CardData) => {
     const opts = card.options ?? []
@@ -265,9 +269,10 @@ export function ExpandPanel(props: ExpandPanelProps): React.ReactElement {
   }
 
   const submitToken = async () => {
-    const t = draft.trim()
-    if (!t) return
-    const ok = await onSetToken(t)
+    // 变量名不叫 t：这个作用域里 t 是翻译函数。
+    const trimmed = draft.trim()
+    if (!trimmed) return
+    const ok = await onSetToken(trimmed)
     if (ok) {
       // 安全：提交后立即从组件状态里清掉明文。
       setDraft('')
@@ -281,9 +286,7 @@ export function ExpandPanel(props: ExpandPanelProps): React.ReactElement {
       {needsAuth ? (
         <div className="tlogs-notice tlogs-notice-danger">
           <span>
-            {auth.status === 'invalid'
-              ? 'userToken 已失效，需要重新登录'
-              : '未配置 userToken，无法获取用量'}
+            {auth.status === 'invalid' ? t('panel.auth.invalid') : t('panel.auth.missing')}
             {/* 附上真实原因：否则自动复用失败时也会显示「需要重新登录」，
                 而用户根本没有可重新登录的入口（内置登录在桌面端不可用）。 */}
             {auth.status === 'invalid' && auth.message ? (
@@ -296,21 +299,17 @@ export function ExpandPanel(props: ExpandPanelProps): React.ReactElement {
               className="tlogs-btn tlogs-btn-primary"
               onClick={onLogin}
               disabled={!loginAvailable}
-              title={
-                loginAvailable
-                  ? '打开内置登录窗口'
-                  : '当前宿主无法创建登录窗口，请用「手动填写」粘贴 platform userToken'
-              }
+              title={loginAvailable ? t('panel.login.title') : t('panel.login.titleDisabled')}
             >
-              登录
+              {t('panel.login')}
             </button>
             <button
               type="button"
               className="tlogs-btn"
               onClick={() => setShowTokenInput((v) => !v)}
-              title="手动粘贴 userToken（方案 C）"
+              title={t('panel.manual.title')}
             >
-              手动填写
+              {t('panel.manual')}
             </button>
           </span>
         </div>
@@ -318,10 +317,7 @@ export function ExpandPanel(props: ExpandPanelProps): React.ReactElement {
 
       {/* 登录窗口不可用时必须写明原因：按钮置灰若不给解释，用户只会觉得是坏了。 */}
       {needsAuth && !loginAvailable ? (
-        <div className="tlogs-hint">
-          内置登录在当前宿主不可用：插件运行在 Electron 的 Node 子进程里，创建不了登录窗口。
-          请点「手动填写」粘贴 platform userToken（形如浏览器 localStorage 里的 userToken 值）。
-        </div>
+        <div className="tlogs-hint">{t('panel.login.unavailable')}</div>
       ) : null}
 
       {showTokenInput ? (
@@ -331,7 +327,7 @@ export function ExpandPanel(props: ExpandPanelProps): React.ReactElement {
             type="password"
             autoComplete="off"
             spellCheck={false}
-            placeholder="粘贴 userToken"
+            placeholder={t('panel.token.placeholder')}
             value={draft}
             onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDraft(e.target.value)}
             onKeyDown={(e: React.KeyboardEvent) => {
@@ -340,7 +336,7 @@ export function ExpandPanel(props: ExpandPanelProps): React.ReactElement {
           />
           <span className="tlogs-actions">
             <button type="button" className="tlogs-btn tlogs-btn-primary" onClick={() => void submitToken()}>
-              保存
+              {t('panel.save')}
             </button>
             <button
               type="button"
@@ -350,7 +346,7 @@ export function ExpandPanel(props: ExpandPanelProps): React.ReactElement {
                 setShowTokenInput(false)
               }}
             >
-              取消
+              {t('panel.cancel')}
             </button>
           </span>
         </div>
@@ -364,7 +360,14 @@ export function ExpandPanel(props: ExpandPanelProps): React.ReactElement {
       {/* 凭据来源：让「方案 D（复用 DSH 账号登录态）到底有没有命中」一眼可辨。
           否则「数字出现了」无法区分是自动复用成功还是残留的手工 token。 */}
       {auth.status === 'ok' ? (
-        <div className="tlogs-hint">凭据来源：{SOURCE_LABEL[auth.source] ?? auth.source}</div>
+        <div className="tlogs-hint">
+          {t('panel.credentialsSource', {
+            // 未知来源（旧宿主 / 以后新增的枚举）直接显示原始值，别伪造成某一种已知来源。
+            source: SOURCE_LABEL[auth.source]
+              ? t(SOURCE_LABEL[auth.source] as MessageKey)
+              : auth.source,
+          })}
+        </div>
       ) : null}
 
       {/* 时间口径必须写在凭据来源下面：平台按 UTC 日切桶，而用户按本机日历理解
@@ -372,21 +375,20 @@ export function ExpandPanel(props: ExpandPanelProps): React.ReactElement {
           本机 0 点算起就会以为是 bug —— 实测正是这样（详见 dayBasisTip 的注释）。
           文案是用户指定的固定原文，逐字照抄；具体换日时刻在 tooltip 里解释。 */}
       <div className="tlogs-hint" title={basis.tip}>
-        {TIME_BASIS_LABEL}
+        {t(TIME_BASIS_KEY)}
       </div>
 
       {/* 本机口径不可用必须说出来：那种情况下窗口卡片退回纯平台账单，
           而平台当天数据要等结算 —— 「今日 0」就是这么来的，不能安静地显示 0。 */}
       {snapshot?.localUsage && !snapshot.localUsage.available ? (
         <div className="tlogs-hint">
-          本机口径不可用（{reasonLabel(snapshot.localUsage.reason)}）：窗口卡片只用平台账单，
-          当天与「非 DeepSeek 供应商」的用量可能缺失或显示 0
+          {t('panel.localUnavailable', { reason: reasonLabel(snapshot.localUsage.reason, t) })}
         </div>
       ) : null}
 
       {/* 金额尚未覆盖全部月份时必须说明，否则「总 ¥」会被当成完整总额。 */}
       {snapshot && !snapshot.costComplete && snapshot.loading ? (
-        <div className="tlogs-hint">正在回补历史金额，卡片上的 ¥ 暂为部分合计…</div>
+        <div className="tlogs-hint">{t('panel.costBackfill')}</div>
       ) : null}
 
       <div className="tlogs-cards">
@@ -399,7 +401,7 @@ export function ExpandPanel(props: ExpandPanelProps): React.ReactElement {
             onCycle={card.options && card.options.length > 1 ? () => cycle(i, card) : undefined}
           />
         ))}
-        {snapshot === null ? <div className="tlogs-empty">加载中…</div> : null}
+        {snapshot === null ? <div className="tlogs-empty">{t('common.loading')}</div> : null}
       </div>
 
       {/* 平台账户概览：余额与**官方账单**累计消费。
@@ -408,14 +410,19 @@ export function ExpandPanel(props: ExpandPanelProps): React.ReactElement {
           把官方数字摆出来，用户才能判断「插件算错了」还是「口径/精度差异」。 */}
       {snapshot?.account ? (
         <div className="tlogs-account">
-          <span title="平台充值余额（get_user_summary.normal_wallets）">
-            余额 <b>{formatMoneyFull(snapshot.account.balance)}</b>
+          <span title={t('panel.account.balanceTip')}>
+            {t('panel.account.balance')}
+            <b>{formatMoneyFull(snapshot.account.balance)}</b>
           </span>
-          <span title="平台账单的累计消费（get_user_summary.total_costs），即控制台口径">
-            官方累计消费 <b>{formatMoneyFull(snapshot.account.totalCosts)}</b>
+          <span title={t('panel.account.totalCostsTip')}>
+            {t('panel.account.totalCosts')}
+            <b>{formatMoneyFull(snapshot.account.totalCosts)}</b>
           </span>
           {snapshot.account.bonusBalance > 0 ? (
-            <span title="赠送余额">赠送 <b>{formatMoneyFull(snapshot.account.bonusBalance)}</b></span>
+            <span title={t('panel.account.bonusTip')}>
+              {t('panel.account.bonus')}
+              <b>{formatMoneyFull(snapshot.account.bonusBalance)}</b>
+            </span>
           ) : null}
         </div>
       ) : null}
@@ -423,17 +430,17 @@ export function ExpandPanel(props: ExpandPanelProps): React.ReactElement {
       <div className="tlogs-footer-actions">
         {enableDetailView ? (
           <button type="button" className="tlogs-btn" onClick={onOpenDetail}>
-            详细数据 ›
+            {t('panel.detail')}
           </button>
         ) : (
           <span />
         )}
         <span className="tlogs-actions">
           <button type="button" className="tlogs-btn" onClick={onRefresh} disabled={busy}>
-            {busy ? '刷新中…' : '刷新'}
+            {busy ? t('common.refreshing') : t('common.refresh')}
           </button>
-          <button type="button" className="tlogs-btn" onClick={onLogout} title="清除本机保存的 userToken">
-            退出登录
+          <button type="button" className="tlogs-btn" onClick={onLogout} title={t('panel.logout.title')}>
+            {t('panel.logout')}
           </button>
         </span>
       </div>

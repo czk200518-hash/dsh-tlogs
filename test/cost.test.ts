@@ -45,6 +45,7 @@ import {
 } from '../lib/types.js'
 import { formatMoney, formatMoneyBy, formatMoneyFull, formatMoneyShort } from '../lib/client/format.js'
 import { bucketMetricValue, monthBuckets, yearBuckets } from '../lib/client/chart-utils.js'
+import { setLangPref } from '../lib/client/i18n/index.js'
 
 /* ------------------------------------------------------------------ *
  * 真实响应形状的夹具
@@ -424,7 +425,9 @@ test('金额格式化：两位小数、千分位、精确值、万/亿缩写', (
   assert.equal(formatMoneyFull(0), '¥0')
   assert.equal(formatMoneyFull(1234.5), '¥1,234.5')
 
-  // 中文习惯用「万 / 亿」，而不是 K/M
+  // 缩写与**语言**有关（中文「万/亿」vs 英文 K/M），所以这里把语言钉死再断言 ——
+  // 测试进程里的 navigator 是 en-US，不钉的话断言的是英文结果。
+  setLangPref('zh')
   assert.equal(formatMoneyShort(172.48), '¥172.48')
   assert.equal(formatMoneyShort(12345.6), '¥1.23万')
   assert.equal(formatMoneyShort(123456789), '¥1.23亿')
@@ -433,6 +436,19 @@ test('金额格式化：两位小数、千分位、精确值、万/亿缩写', (
   assert.equal(formatMoneyBy(172.48, 'full'), '¥172.48')
   assert.equal(formatMoneyBy(12345.6, 'short'), '¥1.23万')
   assert.equal(formatMoneyBy(12345.6, 'full'), '¥12,345.60')
+
+  /*
+   * 英文档位不能照抄中文阈值：1e8 是 100M 而不是「B」（billion = 1e9），
+   * 千位换 K、百万位换 M。这条断言把「英文用 K/M 缩放」钉住。
+   */
+  setLangPref('en')
+  assert.equal(formatMoneyShort(172.48), '¥172.48')
+  assert.equal(formatMoneyShort(12345.6), '¥12.35K')
+  assert.equal(formatMoneyShort(123456789), '¥123M')
+  assert.equal(formatMoneyShort(9999), '¥10K', '英文档位从 1000 起，不再退回精确写法')
+
+  // 收尾：把语言复位，避免影响同文件里后续用例（格式化函数读的是全局偏好）
+  setLangPref('zh')
 })
 
 /* ------------------------------------------------------------------ *

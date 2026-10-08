@@ -10,6 +10,7 @@
  */
 
 import { inputTokens, outputTokens } from '../api/parser.js'
+import { t as translate, type MessageKey } from './i18n/index.js'
 import type { SeriesPoint, Stat } from '../types.js'
 
 /** 指标的计量单位。`money` 走金额格式化（`¥12.34`），不能按 token 缩写。 */
@@ -31,21 +32,26 @@ export type ChartGrain = 'auto' | 'day' | 'month' | 'year'
 /** 解析后的粒度。 */
 export type ResolvedGrain = 'day' | 'month' | 'year'
 
-export const METRICS: ReadonlyArray<{ id: ChartMetric; label: string; unit: MetricUnit }> = [
-  { id: 'total', label: '总 Token', unit: 'tokens' },
-  { id: 'input', label: '输入', unit: 'tokens' },
-  { id: 'output', label: '输出', unit: 'tokens' },
-  { id: 'cacheHit', label: '缓存命中', unit: 'tokens' },
-  { id: 'cacheMiss', label: '缓存未命中', unit: 'tokens' },
-  { id: 'requests', label: '请求数', unit: 'requests' },
-  { id: 'cost', label: '消费金额 (¥)', unit: 'money' },
+/**
+ * 指标表里存的是**键**而不是文案：文案要随语言实时变，只能在渲染时翻译。
+ * 「总 Token / 输入 / 输出」与日历汇总行、表格列头是同一批词，直接复用 part A 的
+ * `stat.*`，避免同一句话在字典里出现两份、日后改一处漏一处。
+ */
+export const METRICS: ReadonlyArray<{ id: ChartMetric; labelKey: MessageKey; unit: MetricUnit }> = [
+  { id: 'total', labelKey: 'stat.totalTokens', unit: 'tokens' },
+  { id: 'input', labelKey: 'stat.input', unit: 'tokens' },
+  { id: 'output', labelKey: 'stat.output', unit: 'tokens' },
+  { id: 'cacheHit', labelKey: 'chart.metric.cacheHit', unit: 'tokens' },
+  { id: 'cacheMiss', labelKey: 'chart.metric.cacheMiss', unit: 'tokens' },
+  { id: 'requests', labelKey: 'chart.metric.requests', unit: 'requests' },
+  { id: 'cost', labelKey: 'chart.metric.cost', unit: 'money' },
 ]
 
-export const GRAINS: ReadonlyArray<{ id: ChartGrain; label: string }> = [
-  { id: 'auto', label: '自动' },
-  { id: 'day', label: '按天' },
-  { id: 'month', label: '按月' },
-  { id: 'year', label: '按年' },
+export const GRAINS: ReadonlyArray<{ id: ChartGrain; labelKey: MessageKey }> = [
+  { id: 'auto', labelKey: 'chart.grain.auto' },
+  { id: 'day', labelKey: 'chart.grain.day' },
+  { id: 'month', labelKey: 'chart.grain.month' },
+  { id: 'year', labelKey: 'chart.grain.year' },
 ]
 
 /** 从原始五类计量项里取出某个指标的数值。 */
@@ -76,10 +82,13 @@ export function metricValue(stat: Stat, metric: ChartMetric): number {
  *
  * 原先只有 tokens/requests 两种，金额被并进 tokens 分支后会显示成
  * 「172」而不是「¥172.48」—— 这正是要单独分一支的原因。
+ *
+ * `t` 由调用方传入（组件里是 `useT()` 的返回值）：后缀是渲染产物，
+ * 用模块级 `t` 会让它在切语言后停在旧语言上。
  */
-export function metricSuffix(unit: MetricUnit): string {
-  if (unit === 'requests') return ' 次'
-  if (unit === 'money') return ' 元'
+export function metricSuffix(unit: MetricUnit, t: (key: MessageKey) => string): string {
+  if (unit === 'requests') return t('chart.unit.requests')
+  if (unit === 'money') return t('chart.unit.money')
   return ''
 }
 
@@ -427,11 +436,14 @@ export interface PieSlice {
  * - 过滤掉 0（否则图例里会出现 0% 的噪声项）
  * - 降序排列，保留前 `maxSlices - 1` 项，其余合并为「其他」
  *   （模型可能有几十个，全画上去图例比图还长）
+ *
+ * `otherLabel` 缺省走模块级 `t`：这是给非渲染调用方（单测、脚本）的兜底；
+ * 组件渲染必须显式传 `t('chart.other')`，否则合并项的文案不会随语言更新。
  */
 export function pieSlices(
   items: Array<{ key: string; label: string; value: number }>,
   maxSlices = 8,
-  otherLabel = '其他',
+  otherLabel = translate('chart.other'),
 ): PieSlice[] {
   const positive = items.filter((i) => i.value > 0).sort((a, b) => b.value - a.value)
   const total = positive.reduce((s, i) => s + i.value, 0)

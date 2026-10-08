@@ -198,10 +198,12 @@ test('pieSlices：过滤 0、降序、超出上限合并为「其他」', () => 
   )
   assert.equal(slices[0]!.percent, 0.5)
 
-  // 12 项 → 7 项 + 其他
+  // 12 项 → 7 项 + 其他（合并项文案由调用方给：渲染路径传 useT() 的结果，
+  // 这里显式传中文，让这条用例只考「合并行为」而不受进程语言影响）
   const many = pieSlices(
     Array.from({ length: 12 }, (_, i) => ({ key: `k${i}`, label: `k${i}`, value: 12 - i })),
     8,
+    '其他',
   )
   assert.equal(many.length, 8)
   assert.equal(many[many.length - 1]!.label, '其他')

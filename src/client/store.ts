@@ -8,6 +8,10 @@
 
 import * as React from 'react'
 import { callRpc, type Rpc } from './api.js'
+// 这里只在事件回调/异步链里拼错误文案（不是渲染路径），直接用模块级 t 即可：
+// 错误字符串一旦生成就与当时的语言绑定，这与「界面文案随语言实时变」并不冲突 ——
+// 报错是**已经发生过的事实**，不需要（也无法）事后改写。
+import { t } from './i18n/index.js'
 import {
   RPC,
   type DetailData,
@@ -214,7 +218,7 @@ export function useTlogs(rpc: Rpc | undefined, initialReason: 'mount' | 'expand'
       try {
         const r = await callRpc<{ ok: boolean; error?: string }>(rpc, RPC.setToken, { token })
         if (r.ok) await refresh(true)
-        else if (alive.current) setError(r.error ?? '保存失败')
+        else if (alive.current) setError(r.error ?? t('error.saveFailed'))
         return r.ok
       } catch (e) {
         if (alive.current) setError(messageOf(e))
@@ -242,7 +246,7 @@ export function useTlogs(rpc: Rpc | undefined, initialReason: 'mount' | 'expand'
     try {
       const r = await callRpc<{ ok: boolean; error?: string }>(rpc, RPC.login)
       if (r.ok) await refresh(true)
-      else if (alive.current) setError(r.error ?? '登录失败')
+      else if (alive.current) setError(r.error ?? t('error.loginFailed'))
       return r.ok
     } catch (e) {
       if (alive.current) setError(messageOf(e))
