@@ -1,113 +1,46 @@
 # tlogs — DSH 侧边栏 Token 用量组件
 
-tlogs 在 DSH 桌面端侧边栏页脚常驻显示 Token 用量。紧凑条显示总量、今日与请求数；展开后是七张卡片；详细数据弹窗可按月回溯，按模型与供应商拆分。数字经 host → 浏览器 RPC 送达侧边栏，默认不进模型上下文。
-
-<!-- 📷 展示图待补：docs/images/overview.png、docs/images/detail-modal.png -->
+tlogs 在 DSH 桌面端侧边栏页脚常驻显示 Token 用量，含紧凑条、展开面板与详细数据弹窗。
 
 ## 形态
 
 | 形态 | 内容 |
 | --- | --- |
-| 紧凑条 | 总量、今日、请求数。`↻` 刷新，`▾` 展开。侧边栏收起时只留总量 |
-| 展开面板 | 总消耗、当前项目、今日、当周、当月、近 7 天、近 30 天。每张含输入、输出、请求与金额 |
-| 详细数据弹窗 | 日历、图表、模型、供应商、年、月、当月按天。图表为手写 SVG，不引图表库 |
+| 紧凑条 | 总量、今日、请求数。`↻` 刷新，`▾` 展开；侧边栏收起时只留总量 |
+| 展开面板 | 总消耗、当前项目、今日、当周、当月、近 7 天、近 30 天 |
+| 详细数据弹窗 | 日历、图表、模型、供应商、年、月、当月按天。图表为手写 SVG |
 
 ## 数据来源
 
-平台接口有两个限制：当天数据需等结算，滞后约 10~30 分钟；只覆盖 DeepSeek 官方通道。窗口卡片与总消耗由两路数据合并。
-
 | 来源 | 覆盖 | 时效 | 金额 |
 | --- | --- | --- | --- |
-| 平台账单 | 账号全部设备，仅官方通道 | 滞后约 10~30 分钟 | 有 |
+| 平台账单 | 账号全部设备，仅 DeepSeek 官方通道 | 滞后 10~30 分钟 | 有 |
 | 本机会话日志 | 仅本机，含所有供应商 | 实时 | 无 |
 
-合并规则：逐日取 `max(平台, 本机官方通道) + 本机第三方供应商`。总消耗 = 平台全部月份 + 当天未结算差额 + 本机第三方供应商。两路是同一批调用的两种测量，取大不会重复计数。
+两路**逐日**合并：`max(平台, 本机官方通道) + 本机第三方供应商`。同一次调用会被两路各记一次，因此取大而不相加。
 
-- 卡片默认**不挂**口径徽标：两路合并已是常态，常挂徽标只会挤掉标题。仅当该窗口含平台账单看不到的第三方用量时标 `第三方`，其余口径细节在卡片标题的 tooltip 里。
-- 金额结算滞后（约 10~30 分钟）同样是常态，因此也不再常亮「结算中」徽标，只在 tooltip 里说明。
-- 本机数据只覆盖会话日志保留期，界面标注区间。
-- 历史月份与图表用平台口径。模型页签与供应商页签标 `官方` 或 `第三方`，按通道判定，不按模型名：火山方舟上的 `deepseek-v4-flash` 属第三方。
-
-## 金额
-
-| 端点 | 内容 |
-| --- | --- |
-| `/api/v0/usage/amount` | token 计数，`biz_data` 为对象 |
-| `/api/v0/usage/cost` | 金额，16 位小数，`biz_data` 为数组 |
-| `/api/v0/users/get_user_summary` | 充值余额、赠送余额、官方累计消费 |
-
-金额解析保留小数，截断解析会把整月金额读成 0。`REQUEST` 不计费。无金额数据时不渲染 `¥`，由 `costComplete` 提示回补状态。
+- 只有窗口内含平台看不到的第三方用量时，卡片才标 `第三方`；其余口径细节见卡片 tooltip。
+- 历史月份与图表用平台口径。模型与供应商页签按**通道**判定，不按模型名：火山方舟上的 `deepseek-v4-flash` 属第三方。
 
 ## 安装
 
-`lib/` 是已构建产物，安装不会构建。执行 `pnpm install && pnpm run build`。
+四种方式：绝对路径、tarball、npm 包名、`github:<user>/dsh-tlogs`。`lib/` 是已构建产物，安装不会构建。
 
-desktop profile 不能用 CLI 安装，CLI 拒绝该 profile 名，改用设置 → 插件 → 安装。其它 profile 用 `dsh plugin --profile web add dsh-tlogs`。
+desktop profile 不能用 CLI 安装，改用 设置 → 插件 → 安装；其它 profile 用 `dsh plugin --profile web add dsh-tlogs`。
 
-安装方式：绝对路径、tarball、npm 包名、`github:<user>/dsh-tlogs`。实测版本 DSH 0.2.0-rc.2（desktop、web）；插件不声明 peer，其它版本可安装但未验证。
-
-安装后重启 DSH，页脚出现紧凑条。`↻` 强制刷新，间隔最短 5 秒；点整条或 `▾` 展开；`详细数据 ›` 打开弹窗，`Esc` 关闭。
+安装后重启 DSH。实测 DSH 0.2.0-rc.2（desktop、web）。
 
 ## 凭据
 
 | 顺序 | 来源 |
 | --- | --- |
 | 1 | 环境变量 `DEEPSEEK_PLATFORM_USER_TOKEN` |
-| 2 | 配置 `platformUserToken`，明文存储 |
-| 3 | DSH 凭据 `TLOGS_USER_TOKEN`，面板填写 |
-| 4 | 复用 DSH 已登录账号，零配置 |
-| 5 | 内置登录窗口，桌面端不可用 |
+| 2 | 配置 `platformUserToken`（明文） |
+| 3 | DSH 凭据 `TLOGS_USER_TOKEN`（面板填写） |
+| 4 | 复用 DSH 已登录账号（零配置） |
+| 5 | 内置登录窗口（桌面端不可用） |
 
-前 3 项优先于自动来源，退出登录只清除第 3 项。网页 token 用 `Authorization: Bearer`，账号会话凭据用 `x-dsh-auth-token`，头部错误返回 `40003`。
-
-账号会话凭据（第 4 项）的持有方式是**租约制**：只在刷新真的开始时取一次，刷新结束（含异常与提前返回）立刻释放引用。刷新之外的一切路径——尤其是客户端刷新期间每 800ms 一次的 `snapshot → authState` 轮询——都拿不到它。唯一的例外是凭据已失效时：那时按 30 秒下限做一次恢复探测，用于「重新登录后自动恢复」，且探测取到的凭据只做等值比较、随即丢弃。
-
-## 安全
-
-| 措施 | 说明 |
-| --- | --- |
-| 凭据最小化 | 账号服务只暴露 `getPlatformSession()` |
-| 凭据生命周期 | 账号会话凭据只在刷新期间持有，刷新结束即释放；失效标记只存摘要、不存原文；凭据失效时按 30 秒下限做一次恢复探测，取到即弃 |
-| 只读 | 不调用 `rejectToken()`，不影响登录态 |
-| 重定向 | 用 `redirect: 'manual'`，3xx 直接失败 |
-| 请求头白名单 | 只接受 `x-` 前缀，丢弃 `Cookie`、`Origin`、`Referer`、`Host` |
-| 出口 | 只与 `platform.deepseek.com` 通信，不读代理变量 |
-| 输入校验 | token 只接受可打印 ASCII，不回显；错误文案清除令牌并截断 |
-| 端点 | 停用 `export`，强制刷新间隔最短 5 秒 |
-| 模型隔离 | `exposeUsageToModel` 默认 `false`，不注册工具；即便打开，工具出参也不含本机路径 |
-| 工具出参 | 项目 id 一律为不可逆短哈希（`publicProjectId()`），模型上下文里不出现绝对路径 |
-| 会话日志 | 只读 `<DSH_HOME>/sessions/**`，只取用量计数与 provider/model，落盘只存路径哈希 |
-| 仓库 | 无令牌字面量，夹具为合成数据，`npm run verify:secrets` 为发布闸门 |
-
-最小权限配置：
-
-```yaml
-exposeUsageToModel: false
-useAccountSession: false
-enableProjectScope: false
-persistHistory: false
-localUsage: false
-```
-
-## 隐患
-
-**DSH 架构限制**
-
-1. 同一浏览器 realm 内，其它插件可调用本插件的 RPC。
-2. `.credentials.yaml` 中的凭据可直接使用，同用户进程可读。
-3. 本机回环服务与会话 Cookie 的保护由 DSH 提供；profile 的 pnpm 源为第三方镜像。
-
-**插件取舍**
-
-4. 账号会话凭据只在刷新期间持有，刷新结束（含异常）即释放引用；刷新之外的轮询取不到它。JS 字符串无法物理擦除，故这是「断开可达引用」而非「抹掉字节」。
-5. 面板显示项目 label，本机数据源读取会话日志，可用配置关闭。
-6. 平台错误文案写入宿主日志；`lib/` 被手动修改无法检测。
-7. 项目快照从插件启用当天开始，无法回溯。
-
-**使用习惯**
-
-8. 在对话中粘贴数字或截图会进入模型上下文。
-9. 参考脚本中的明文令牌需在平台侧轮换。
+前 3 项优先于自动来源；退出登录只清除第 3 项。
 
 ## 配置
 
@@ -128,17 +61,53 @@ localUsage: false
 | `compactMetrics` | `[total, today]` | 紧凑条指标 |
 | `cacheDir` | `''` | 空为 `<DSH_HOME>/tlogs` |
 
-`compactMetrics` 取值：`total`、`today`、`week`、`month`、`last7`、`last30`、`cost_total`、`cost_today`、`cost_last7`、`cost_last30`。
+`compactMetrics` 可选：`total`、`today`、`week`、`month`、`last7`、`last30`、`cost_total`、`cost_today`、`cost_last7`、`cost_last30`。
 
 环境变量：`DEEPSEEK_PLATFORM_USER_TOKEN`、`TLOGS_CACHE_DIR`、`DSH_HOME`。
+
+## 安全
+
+| 措施 | 说明 |
+| --- | --- |
+| 凭据 | 账号服务只暴露 `getPlatformSession()`，不调用 `rejectToken()`；会话凭据只在刷新期间持有，失效标记只存摘要；token 只接受可打印 ASCII，不回显 |
+| 网络 | 只与 `platform.deepseek.com` 通信，不读代理变量，3xx 直接失败；部署头白名单只放行 `x-` 前缀，丢弃 `Cookie`、`Origin`、`Referer`、`Host` |
+| 模型隔离 | `exposeUsageToModel` 默认 `false`；即便打开，工具出参里的项目 id 也是不可逆哈希，不含本机路径 |
+| 会话日志 | 只读 `<DSH_HOME>/sessions/**`，只取用量计数与 provider/model，落盘只存路径哈希 |
+| 发布闸门 | `npm run verify:secrets` 无命中才允许发布 |
+
+最小权限配置：
+
+```yaml
+exposeUsageToModel: false
+useAccountSession: false
+enableProjectScope: false
+persistHistory: false
+localUsage: false
+```
+
+## 隐患
+
+**架构**
+
+1. 同一浏览器 realm 内，其它插件可调用本插件的 RPC。
+2. `.credentials.yaml` 同用户进程可读——本机凭据的主要暴露面，与插件无关。
+3. 会话凭据只能断开引用，无法物理擦除（JS 字符串不可变）；DSH 内部是否缓存不在本插件边界内。
+
+**取舍**
+
+4. 面板显示项目 label，本机数据源读取会话日志；可用配置关闭。
+5. 项目快照从插件启用当天开始，无法回溯。
+
+**使用习惯**
+
+6. 在对话中粘贴用量数字或截图会进入模型上下文。
 
 ## 开发
 
 ```bash
-pnpm run check          # 密钥闸门、typecheck、build、测试
-pnpm run golden         # 在线端到端对拍，需要 DEEPSEEK_PLATFORM_USER_TOKEN
-pnpm run verify:dsh     # 用本机 DSH 解析器校验插件声明
-pnpm run build:preview  # 重新生成 docs/embed-preview.html
+pnpm run check       # 密钥闸门、typecheck、build、测试
+pnpm run verify:dsh  # 用本机 DSH 解析器校验插件声明
+pnpm run golden      # 在线端到端对拍，需要 DEEPSEEK_PLATFORM_USER_TOKEN
 ```
 
 `test/golden.test.ts` 缺外部 Python 参考脚本时跳过，用 `TLOGS_REFERENCE_SCRIPT=<路径>` 指定。
