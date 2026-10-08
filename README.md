@@ -16,15 +16,15 @@ tlogs 在 DSH 桌面端侧边栏页脚常驻显示 Token 用量，含紧凑条�
 
 弹窗按页签组织。**图表**页签的三张图共享同一套控制项（范围 × 数据源 × 指标 × 粒度），切换任意一项三张图一起变：
 
-![用量趋势（折线）](docs/images/detail-chart-line.png)
+<img src="docs/images/detail-chart-line.png" alt="用量趋势（折线）" width="70%">
 
-![构成占比（饼状）](docs/images/detail-chart-donut.png)
+<img src="docs/images/detail-chart-donut.png" alt="构成占比（饼状）" width="70%">
 
-![用量分布（柱状，三段堆叠 + 请求数虚线）](docs/images/detail-chart-bar.png)
+<img src="docs/images/detail-chart-bar.png" alt="用量分布（柱状，三段堆叠 + 请求数虚线）" width="70%">
 
 **日历**页签按月列出逐日用量与金额，点某一天看当天明细：
 
-![日历](docs/images/detail-calendar.png)
+<img src="docs/images/detail-calendar.png" alt="日历" width="70%">
 
 ## 数据来源
 
