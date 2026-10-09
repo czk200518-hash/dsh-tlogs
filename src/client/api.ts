@@ -1,18 +1,13 @@
 /**
- * tlogs — 客户端 RPC 封装。
- *
- * 通道约定与 workspace-mover 一致（已在 0.2.0-rc.2 实测可用）：
- *   客户端：`ctx.connection.rpc.call(CHANNEL, endpoint, payload)`
- *   宿主端：`connection.rpc.handle(CHANNEL, handler, { authority: 'loopback' })`
- *
- * 信封形状与 DSH 的 rpcErrorSchema 兼容：
- *   成功 `{ ok: true, value }`，失败 `{ ok: false, error: { code, message, details } }`
+ * tlogs — client-side RPC wrapper. The client calls `ctx.connection.rpc.call(CHANNEL, endpoint,
+ * payload)`; the host registers handlers with `connection.rpc.handle(...)`. Envelopes match DSH's
+ * rpcErrorSchema: `{ ok: true, value }` on success, `{ ok: false, error }` on failure.
  */
 
 import { TLOGS_CHANNEL } from '../types.js'
 import { t } from './i18n/index.js'
 
-/** 带 code 的错误，便于调用方按 code 分支。 */
+/** Carries the host's error code so callers can branch on it. */
 export interface RpcFailure extends Error {
   code?: string
 }
@@ -21,7 +16,7 @@ export interface Rpc {
   call(endpoint: string, payload?: unknown): Promise<unknown>
 }
 
-/** 从客户端 ctx 构造 RPC 句柄。缺失连接能力时返回 undefined。 */
+/** Bind an RPC handle to the tlogs channel; undefined when ctx has no connection. */
 export function makeRpc(ctx: {
   connection?: { rpc?: { call?: (channel: string, endpoint: string, payload: unknown) => Promise<unknown> } }
 }): Rpc | undefined {
@@ -32,7 +27,7 @@ export function makeRpc(ctx: {
   }
 }
 
-/** 调用并解开信封；失败时抛出带 `code` 的 Error。 */
+/** Call an endpoint and unwrap the envelope; a failed envelope throws an Error carrying `code`. */
 export async function callRpc<T>(rpc: Rpc | undefined, endpoint: string, payload?: unknown): Promise<T> {
   if (!rpc) {
     const err = new Error(t('error.noConnection')) as RpcFailure

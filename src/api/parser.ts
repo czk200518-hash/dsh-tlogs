@@ -1,16 +1,10 @@
 /**
- * tlogs — 响应解析与聚合。
+ * tlogs — 平台响应体的解析与聚合。输入是 `usage/amount` / `usage/cost` 的 `biz_data`，
+ * 输出是五类计量项的合计（整体 / 按模型 / 按天）。接口字段名与类型见 `types.ts`，这里只做归一化。
  *
- * 本文件是工作区权威参考实现 `deepseek_python_20261007_a1f087.py` 中
- * `parse_biz_data` / `input_tokens` / `output_tokens` / `empty_stat` 的逐行翻译。
- * 注释里的 `py:NN` 指向该 Python 文件的行号，便于逐条对拍。
- *
- * 翻译过程中刻意保留的 Python 语义：
- *  - `u.get("amount") or 0`   → `entry.amount || 0`（0 / "" / null 均归零）
- *  - `int(float(x))`          → `Number(x)` 后 `Math.trunc`（向零截断，非四舍五入）
- *  - `except (ValueError, TypeError)` → 非有限数一律归 0
- *  - `if t not in agg: continue` → 未知 type 既不进 agg 也不进 models
- *  - `if not isinstance(item, dict): continue` → 非字典条目整条跳过
+ * 不可从代码推断的口径约束：
+ *  - token 的 `amount` 是整数字符串，金额的 `amount` 是 16 位小数字符串，必须走各自的转换函数，金额用 `Math.trunc` 会被吞成 0；
+ *  - `usage/cost` 的 `biz_data` 是长度 1 的数组（`usage/amount` 是对象），先归一化再解析；未知 `type` 既不进合计也不进按模型明细（与 Python 参考实现一致）；非字典条目整条跳过。
  */
 
 import {
@@ -29,21 +23,14 @@ import {
   type UsageEntry,
 } from '../types.js'
 
-/** Python `isinstance(x, dict)` 的等价判断（排除 null 与数组）。 */
+/** `isinstance(x, dict)` 的等价判断（排除 null 与数组）。 */
 function isDict(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
 
 /**
- * 把接口里的 `amount` 转成整数，等价于 Python：
- *   `int(float(u.get("amount") or 0))`，异常时取 0。
- *
- * 唯一有意的偏差：Python 的 `int(float("inf"))` 会抛 OverflowError 且**不在**
- * `except (ValueError, TypeError)` 覆盖范围内（脚本会整体崩溃）；这里对非有限数
- * 一律返回 0。真实接口的 amount 始终是整数字符串，不会触发该分支。
- *
- * **只用于 token 计数**（`usage/amount`）。金额必须走 `toMoneyAmount`，
- * 否则会被 `Math.trunc` 截成 0（实测金额形如 `"12.1115392000000000"`）。
+ * 把接口里的 `amount` 转成整数：`int(float(value or 0))`，向零截断，非有限数归 0。只用于 token 计数；
+ * 金额走 `toMoneyAmount`，否则会被截成 0。
  */
 export function toAmount(value: unknown): number {
   const raw = value || 0
@@ -53,14 +40,9 @@ export function toAmount(value: unknown): number {
 }
 
 /**
- * 把**金额**字符串转成数值（CNY 元），保留小数。
- *
- * 与 `toAmount` 的唯一区别就是**不截断** —— 实测 `usage/cost` 返回
- * `"12.1115392000000000"`，用 `Math.trunc` 会得到 0（这个坑实测踩过）。
- *
- * 精度：接口给 16 位小数，`Number()` 取最近 double，逐项累加的误差量级约 1e-11 元，
- * 而展示只到分（1e-2）甚至厘（1e-4），因此无需引入定点数。这里对单个值做 1e-8
- * 圆整，只为去掉 double 表示噪声、让持久化的 JSON 更短更稳定。
+ * 把金额字符串转成数值（CNY 元），保留小数。接口给 16 位小数，`Number()` 取最近 double，逐项累加的
+ * 误差量级约 1e-11 元，而展示只到分甚至厘，因此无需定点数。这里的 1e-8 圆整只为去掉 double 表示噪声，
+ * 让持久化的 JSON 更短更稳定。
  */
 export function toMoneyAmount(value: unknown): number {
   const raw = value || 0
@@ -70,10 +52,8 @@ export function toMoneyAmount(value: unknown): number {
 }
 
 /**
- * 归一化 `biz_data`：`usage/amount` 给**对象**，`usage/cost` 给**长度 1 的数组**。
- *
- * 不做这一步就会静默拿到 `undefined.total` ⇒ 全 0（实测：`usage/cost` 的月度金额
- * 会全部显示成 ¥0.00，且不报任何错）。
+ * 归一化 `biz_data`：`usage/amount` 给对象，`usage/cost` 给长度 1 的数组。
+ * 不做这一步会静默拿到 `undefined.total`，金额全部显示成 ¥0.00 且不报错。
  */
 export function unwrapBizData(raw: unknown): BizData {
   if (Array.isArray(raw)) {
@@ -84,38 +64,34 @@ export function unwrapBizData(raw: unknown): BizData {
 }
 
 /**
- * 把一个模型条目数组按五类计量项聚合。等价于 Python `parse_biz_data` 内层循环。
- *
- * 注意：即使某个模型的 `usage` 为空或缺省，该模型键也会被创建（全部为 0），
- * 这与 Python `models.setdefault(model, empty_stat())` 的行为一致 —— 实测接口
- * 的 `total[]` 会返回若干全 0 模型，UI 侧再按需求过滤。
+ * 把一个模型条目数组按五类计量项聚合。即使某个模型的 `usage` 为空或缺省，它的键也会被创建（全 0）——
+ * 接口的 `total[]` 本来就会返回若干全 0 模型，是否展示由调用方决定。
  */
 function aggregateModels(
   items: unknown,
   onModel?: (model: string, stat: Stat) => void,
 ): { agg: Stat; models: Record<string, Stat> } {
-  const agg = emptyStat() // py:97
-  const models: Record<string, Stat> = {} // py:98
+  const agg = emptyStat()
+  const models: Record<string, Stat> = {}
 
-  const list = Array.isArray(items) ? items : [] // py:100 `biz_data.get("total") or []`
+  const list = Array.isArray(items) ? items : []
   for (const item of list) {
-    if (!isDict(item)) continue // py:102
-    const model = (item.model as string) || 'unknown' // py:104 `item.get("model") or "unknown"`
+    if (!isDict(item)) continue
+    const model = (item.model as string) || 'unknown'
     let m = models[model]
     if (!m) {
       m = emptyStat()
-      models[model] = m // py:105 setdefault
+      models[model] = m
     }
 
     const usage = (item as ModelUsage).usage
-    const usageList = Array.isArray(usage) ? usage : [] // py:107
-    for (const u of usageList) {
-      if (!isDict(u)) continue // py:108
+    for (const u of Array.isArray(usage) ? usage : []) {
+      if (!isDict(u)) continue
       const t = (u as UsageEntry).type
-      if (!isTokenType(t)) continue // py:110-111 `if t not in agg: continue`
-      const a = toAmount((u as UsageEntry).amount) // py:113-117
-      agg[t] += a // py:118
-      m[t] += a // py:119
+      if (!isTokenType(t)) continue
+      const a = toAmount((u as UsageEntry).amount)
+      agg[t] += a
+      m[t] += a
     }
 
     onModel?.(model, m)
@@ -124,20 +100,14 @@ function aggregateModels(
   return { agg, models }
 }
 
-/**
- * 解析 `biz_data`，返回整体合计与按模型合计。
- * 等价于 Python `parse_biz_data(biz_data) -> (agg, models)`（py:91-120）。
- */
+/** 解析 `biz_data`，返回整体合计与按模型合计。 */
 export function parseBizData(bizData: BizData | null | undefined): ParsedUsage {
   return aggregateModels(bizData?.total)
 }
 
 /**
- * 解析 `biz_data.days[]`，得到每一天的合计。
- *
- * 结构上 `days[].data[]` 与 `total[]` 同构，因此复用同一套聚合逻辑。
- * 实测接口会返回**当月完整天数**（含尚未到来的日期，全为 0），
- * 所以按日期过滤 today / week / month 无需额外处理缺失日期。
+ * 解析 `biz_data.days[]`，得到每一天的合计。`days[].data[]` 与 `total[]` 同构，因此复用同一套聚合逻辑。
+ * 接口会返回当月完整天数（含尚未到来的日期，全为 0），所以按日期过滤 today / week / month 时不必处理缺失日期。
  */
 export function parseDays(
   bizData: BizData | null | undefined,
@@ -146,8 +116,7 @@ export function parseDays(
   const days = bizData?.days
   const list = Array.isArray(days) ? days : []
   const out: Array<{ date: string; stat: Stat; cost?: Money }> = []
-  // 实测金额与 token 的逐日日期**逐个相同**，因此可以直接按 date 建索引对齐，
-  // 而不必假设两边顺序一致（顺序一致只是当前实现的巧合，不是契约）。
+  // 金额与 token 的逐日日期逐个相同，因此按 date 建索引对齐，不依赖两边顺序一致。
   const costByDate = new Map<string, Money>()
   for (const c of cost?.days ?? []) costByDate.set(c.date, c.cost)
   for (const day of list) {
@@ -163,16 +132,10 @@ export function parseDays(
   return out
 }
 
-/** 总输入 = PROMPT + CACHE_HIT + CACHE_MISS。等价于 Python `input_tokens`（py:123-128）。 */
 export function inputTokens(stat: Stat): number {
-  return (
-    stat.PROMPT_TOKEN + // py:125
-    stat.PROMPT_CACHE_HIT_TOKEN + // py:126
-    stat.PROMPT_CACHE_MISS_TOKEN // py:127
-  )
+  return stat.PROMPT_TOKEN + stat.PROMPT_CACHE_HIT_TOKEN + stat.PROMPT_CACHE_MISS_TOKEN
 }
 
-/** 总输出 = RESPONSE_TOKEN。等价于 Python `output_tokens`（py:131-132）。 */
 export function outputTokens(stat: Stat): number {
   return stat.RESPONSE_TOKEN
 }
@@ -185,7 +148,7 @@ export function toScopeStat(stat: Stat, cost?: Money, currency?: string): ScopeS
     raw: stat,
     inputTokens: input,
     outputTokens: output,
-    totalTokens: input + output, // py:204 `g_total = g_in + g_out`
+    totalTokens: input + output,
     requests: stat.REQUEST,
   }
   if (cost) {
@@ -195,13 +158,12 @@ export function toScopeStat(stat: Stat, cost?: Money, currency?: string): ScopeS
   return base
 }
 
-/** 过滤掉「零用量」的行 —— 对应屏幕表格里的可见性规则。 */
+/** 该行是否有可见用量（详细视图据此跳过空行）。 */
 export function isNonEmpty(stat: ScopeStat): boolean {
-  // 等价于 Python 汇总区的 `if t == 0 and s["REQUEST"] == 0: continue`（py:229-230）
   return stat.totalTokens !== 0 || stat.requests !== 0
 }
 
-/** 把 src 累加进 target（就地修改 target 并返回）。等价于 py:169-174 的双层循环。 */
+/** 把 src 累加进 target（就地修改并返回 target）。 */
 export function addInto(target: Stat, src: Stat): Stat {
   for (const t of TOKEN_TYPES) target[t] += src[t]
   return target
@@ -212,17 +174,13 @@ export function mergeStats(a: Stat, b: Stat): Stat {
   return addInto(addInto(emptyStat(), a), b)
 }
 
-/** 全部归零的 Stat 之和。 */
 export function sumStats(list: Iterable<Stat>): Stat {
   const acc = emptyStat()
   for (const s of list) addInto(acc, s)
   return acc
 }
 
-/**
- * 由 Stat 构造 StatRow，用于详细视图的表格。
- * `label` 仅作展示，`key` 用于排序与 stable key。
- */
+/** 由 Stat 构造 StatRow，用于详细视图的表格；`label` 仅作展示，`key` 用于排序与 stable key。 */
 export function toRow(key: string, label: string, stat: Stat): {
   key: string
   label: string
@@ -231,13 +189,9 @@ export function toRow(key: string, label: string, stat: Stat): {
   return { key, label, stat: toScopeStat(stat) }
 }
 
-/* ------------------------------------------------------------------ *
- * 金额（usage/cost）
- * ------------------------------------------------------------------ */
-
 /**
- * 按五类计量项聚合**金额**。与 `aggregateModels` 同构，唯一区别是用
- * `toMoneyAmount`（保留小数）而不是 `toAmount`（截断）。
+ * 按五类计量项聚合金额。与 `aggregateModels` 同构，区别只在用 `toMoneyAmount` 保留小数，以及只登记
+ * 真的花了钱的模型（接口会给一堆全 0 模型，登记进去界面只会多出空行）。
  */
 function aggregateMoney(
   items: unknown,
@@ -260,39 +214,33 @@ function aggregateMoney(
       total[t] += a
       sum += a
     }
-    // 只登记真的花了钱的模型：接口会给一堆全 0 模型，登记进去只会让界面出现空行。
-    if (sum > 0) models[model] = Math.round(sum * 1e8) / 1e8
+    if (sum > 0) models[model] = toMoneyAmount(sum)
     onModel?.(model, sum)
   }
 
   return { total, models }
 }
 
-/** 某月的金额解析结果。 */
+/**
+ * 某月的金额解析结果：`total` 该月总费用（按五类拆分）、`amount` 合计元数、
+ * `models` 按模型费用（已过滤 0）、`days` 逐日费用（日期与 `usage/amount` 的逐日日期逐个相同）、`currency` 币种（接口给 `CNY`）。
+ */
 export interface ParsedCost {
-  /** 该月总费用，按五类拆分。 */
   total: Money
-  /** 该月费用合计（元）。 */
   amount: number
-  /** 按模型的费用（元），已过滤掉 0。 */
   models: Record<string, number>
-  /** 逐日费用（五类拆分），日期与 `usage/amount` 的逐日日期逐个相同。 */
   days: Array<{ date: string; cost: Money }>
-  /** 币种（实测 `CNY`）。 */
   currency: string
 }
 
 /**
- * 解析 `usage/cost` 的 `biz_data`。
+ * 解析 `usage/cost` 的 `biz_data`。接口侧的几条事实决定了这里的写法：
+ *  - `biz_data` 是数组 `[{ total, days, currency }]`，先 `unwrapBizData` 再解析；
+ *  - `days[].data[]` 与 `total[]` 同构，逐日金额之和与月度金额之和完全相等；
+ *  - `days[].date` 与 `usage/amount` 的 `days[].date` 逐个相同，故可与 token 逐日对齐；`REQUEST` 的金额恒为 0（请求不计费）。
  *
- * 实测事实（2026-10 直接对拍）：
- *  - `biz_data` 是**数组** `[{ total, days, currency }]`，必须先 `unwrapBizData`
- *  - `days[].data[]` 与 `total[]` 同构，逐日金额之和与月度金额之和**完全相等**
- *  - `days[].date` 与 `usage/amount` 的 `days[].date` **逐个相同** ⇒ 可与 token 逐日对齐
- *  - `REQUEST` 的金额恒为 0（请求不计费）
- *
- * 逐日保存**五类拆分**而不是一个总额：today/week/month/last7/last30 这些窗口是按天
- * 切片出来的，只留总额就没法给出「输入花了多少钱 / 输出花了多少钱」。
+ * 逐日保存五类拆分而不是一个总额：today/week/month/last7/last30 都是按天切出来的窗口，
+ * 只留总额就没法回答「输入花了多少钱 / 输出花了多少钱」。
  */
 export function parseCost(bizData: BizData | null | undefined): ParsedCost {
   const { total, models } = aggregateMoney(bizData?.total)
@@ -301,22 +249,17 @@ export function parseCost(bizData: BizData | null | undefined): ParsedCost {
     if (!isDict(day)) continue
     const date = (day as DayUsage).date
     if (typeof date !== 'string' || date.length === 0) continue
-    const { total: dTotal } = aggregateMoney((day as DayUsage).data)
-    days.push({ date, cost: dTotal })
+    const { total: dayTotal } = aggregateMoney((day as DayUsage).data)
+    days.push({ date, cost: dayTotal })
   }
   const currency = typeof bizData?.currency === 'string' && bizData.currency ? bizData.currency : 'CNY'
   return {
     total,
-    amount: round8(moneyTotal(total)),
+    amount: toMoneyAmount(moneyTotal(total)),
     models,
     days,
     currency,
   }
-}
-
-/** 圆整到 1e-8（元），去掉 double 表示噪声。 */
-function round8(n: number): number {
-  return Math.round(n * 1e8) / 1e8
 }
 
 /** 把 src 的金额累加进 target（就地）。 */

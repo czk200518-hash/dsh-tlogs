@@ -1,22 +1,11 @@
 /**
- * tlogs — 宿主端（Host half）插件入口。
+ * tlogs 宿主端入口（跑在 DSH 的 Node 进程里）。
  *
- * 本插件的双端结构（与 DSH 0.2.0-rc.2 的双面插件约定一致，已对照
- * 已发布的第三方双面插件核对）：
- *   - `exports "."` / `main`      → 本文件，跑在 DSH host（Node 进程）
- *   - `exports "./client"`        → 浏览器半侧，由 /plugins/<id>/client.js 提供
- *   - `dsh.bundle.patch`          → cordis.patch.yml，把插件行插入 profile roster
- *   - `dsh.client.inject`         → 浏览器半侧声明的客户端服务依赖
- *
- * 权限（需求 5.3 最小化）：
- *   只把 `tools` 声明为**必需**服务；`credentials` / `connection` / `webServer`
- *   都是**可选**能力，通过 `ctx.inject([...], cb)` 或 `ctx.get(name)` 惰性获取，
- *   缺失时优雅降级而不是让插件加载失败。
- *
- * 关于类型：这里使用本地最小接口 `TlogsHostContext` 而不是 import
- * `@deepseek-ai/cordis` 的 `Context`。原因是 profile 下的第三方插件无法保证
- * 能解析到 app.asar 内部的包；本地接口既保证构建可离线完成，也把本插件
- * 真正用到的 host 表面（surface）显式记录下来。
+ * 双端结构：本文件是 `main` / `exports "."`；浏览器半侧由 `exports "./client"` 提供；`dsh.bundle.patch` 把插件行插入 profile roster。
+ * 权限只声明 `tools` 为必需服务；credentials / connection / webServer / deepseekAccount 都是可选能力，用 `ctx.inject` 或
+ * `ctx.get` 惰性获取，缺失时优雅降级而不是让插件加载失败。
+ * 这里的 host 上下文用本地最小接口而不是 import `@deepseek-ai/cordis` 的 `Context`：profile 下的第三方插件无法保证能解析到
+ * app.asar 内部的包，本地接口既保证离线可构建，也把本插件真正用到的宿主表面显式记录下来。
  */
 
 import z from 'schemastery'
@@ -27,11 +16,7 @@ import { SessionUsageStore } from './store/session-usage.js'
 import { JsonFileCache } from './store/persist.js'
 import { TokenManager, redactToken } from './auth/token-manager.js'
 import { createCredentialStore } from './auth/credentials-store.js'
-import {
-  canInteractiveLogin,
-  interactiveLogin,
-  readPlatformSessionToken,
-} from './auth/desktop-login.js'
+import { canInteractiveLogin, interactiveLogin, readPlatformSessionToken } from './auth/desktop-login.js'
 import { UsageService, type Logger, type ProjectUsageProvider } from './service.js'
 import { makeRpcHandler } from './rpc.js'
 import { makeUsageTool } from './tools.js'
@@ -41,49 +26,33 @@ import { createProjectProvider } from './store/project.js'
 /** 插件名（诊断/展示用；Loader 行 id 由 cordis.patch.yml 指定为 `tlogs`）。 */
 export const name = 'tlogs'
 
-/**
- * 必需服务。只有 `tools` 是真正必需的（注册面向模型的工具）；
- * credentials / connection / webServer 都作为可选能力惰性获取。
- */
+/** 必需服务：只有注册面向模型的工具是硬需求。 */
 export const inject = ['tools']
 
 /**
- * 插件配置 schema（schemastery）。
- *
- * DSH 的 Loader 会用 `Config` 校验 cordis.patch.yml 里该行传入的 config，
- * 默认值在激活时填充。为避免「客户端读不到插件配置」的问题
- * （浏览器半侧只能读 `settings` 里被 `.volatile()` 标记的字段），
- * 展示相关配置由 host 通过 `tlogs.snapshot` 的 `display` 字段下发。
+ * 插件配置 schema（schemastery）。Loader 用 `Config` 校验 cordis.patch.yml 里该行传入的 config 并填默认值。
+ * 展示相关配置由 host 通过 `tlogs.snapshot` 的 `display` 字段下发 —— 浏览器半侧读不到插件配置，
+ * 只能读 `settings` 里被 `.volatile()` 标记的字段。
  */
 export const Config = z.object({
-  /** 手动指定 userToken（不推荐；优先自动获取）。 */
+  /** 不推荐手填；优先自动获取。 */
   platformUserToken: z.string().default(''),
-  /** 起始查询年（与权威 Python 脚本一致）。 */
   startYear: z.number().default(2024),
-  /** 起始查询月（与权威 Python 脚本一致）。 */
   startMonth: z.number().default(4),
-  /** 月度请求间隔（毫秒，对应 Python 的 time.sleep(REQUEST_INTERVAL)）。 */
+  /** 月度请求之间的间隔，毫秒。 */
   requestIntervalMs: z.number().default(1000),
-  /** 缓存时长（**秒**）。 */
+  /** 单位为秒，内部换算成毫秒。 */
   cacheTTL: z
     .object({
       total: z.number().default(1800),
       current: z.number().default(300),
     })
     .default({ total: 1800, current: 300 }),
-  /** 内嵌组件默认是否展开。 */
   defaultExpanded: z.boolean().default(false),
   /**
-   * 紧凑条展示的指标。
-   *
-   * 默认只放「总计 + 今日」。侧边栏页脚很窄：原先默认再加一项金额（共四个指标）
-   * 时，四个标签全被 flex 压成了看不清的碎片，紧凑条变成
-   * 「8.9B · ¥678.87 · ↖561M · ⚡2.4K」这种读不出来的样子（实测截图）。
-   * 所以**金额不进紧凑条** —— 金额在展开面板的卡片里，以及「详细数据」里看。
-   *
-   * 可选 `week` / `month` / `last7` / `last30`（滚动窗口，口径与控制台一致），
-   * 以及 `cost_total` / `cost_today` / `cost_last7` / `cost_last30`（对应的金额）——
-   * 确实想在小窗看金额，就显式加进去。
+   * 紧凑条展示的指标。默认只放「总计 + 今日」：侧边栏页脚很窄，指标一多四个标签就会被 flex 压成
+   * 看不清的碎片。金额不进紧凑条，在展开面板的卡片与「详细数据」里看。
+   * 可选 week / month / last7 / last30，以及对应的 cost_* 金额项。
    */
   compactMetrics: z
     .array(
@@ -101,54 +70,26 @@ export const Config = z.object({
       ]),
     )
     .default(['total', 'today']),
-  /** 是否启用详细面板。 */
   enableDetailView: z.boolean().default(true),
-  /** 数字格式。 */
   numberFormat: z.union(['full', 'short']).default('short'),
-  /** 缓存目录；留空则用 `<DSH_HOME>/tlogs`（或 TLOGS_CACHE_DIR）。 */
+  /** 留空则用 `<DSH_HOME>/tlogs`（或 TLOGS_CACHE_DIR）。 */
   cacheDir: z.string().default(''),
-  /** 是否启用「当前项目消耗」卡片。 */
   enableProjectScope: z.boolean().default(true),
-  /** 是否允许历史缓存落盘（false 时完全不访问文件系统）。 */
+  /** false 时完全不访问文件系统。 */
   persistHistory: z.boolean().default(true),
-  /**
-   * 定时自动刷新间隔（**秒**）。默认 300 = 5 分钟；0 = 关闭。
-   * 单次刷新真正打哪些月份仍由 cacheTTL 决定，所以不会每 5 分钟全量拉 31 个月。
-   */
+  /** 单位秒；0 = 关闭。 */
   autoRefreshSeconds: z.number().default(300),
-  /** 工具结果最多返回多少行。 */
   maxToolRows: z.number().default(20),
-  /**
-   * 是否把用量数字暴露给模型（注册 query_token_usage）。
-   *
-   * **默认 false。** 工具的返回值会进入模型上下文 —— 也就是把你的用量统计当作
-   * 对话内容发给模型提供方。默认不注册，数字只走 host→浏览器 RPC 进侧边栏 UI。
-   */
+  /** 默认 false：工具返回值会进模型上下文。 */
   exposeUsageToModel: z.boolean().default(false),
-  /**
-   * 是否复用 DSH 已登录账号的 Platform 会话凭据（方案 D）。
-   *
-   * **默认 true**（零配置取数）。设 false 后插件完全不接触 `deepseekAccount`：
-   * 连可选注入都不会发起，只剩手工/环境变量/配置三条显式来源。
-   */
+  /** 是否复用 DSH 已登录账号的 Platform 会话凭据。默认 true（零配置取数）。 */
   useAccountSession: z.boolean().default(true),
-  /**
-   * 是否读取本机会话日志作为**第二路数据源**。
-   *
-   * **默认 true。** 平台账单只覆盖 DeepSeek 官方通道，且当天数据要等平台结算
-   * （实测北京 12:07 当天仍为 0）；火山方舟/小米/GLM 等供应商平台完全看不到。
-   * 本机口径从 `<DSH_HOME>/sessions/**` 重建逐日用量：实时、覆盖本机所有供应商，
-   * 但只看得到本机。设 false 后插件**完全不读会话日志**。
-   */
   localUsage: z.boolean().default(true),
-  /** 本机口径回溯天数（默认 32，覆盖「近 30 天」窗口）。 */
+  /** 覆盖「近 30 天」窗口还留了 2 天余量。 */
   localUsageScanDays: z.number().default(32),
 })
 
-/**
- * 本插件真正用到的 host 上下文表面。
- * 与 `@deepseek-ai/cordis` 的 `Context` 兼容；只列出用到的方法。
- */
+/** 本插件用到的那部分 host 上下文（与 `@deepseek-ai/cordis` 的 `Context` 兼容）。 */
 export interface TlogsHostContext {
   logger?: Logger
   tools?: { register: (definition: unknown) => unknown }
@@ -161,8 +102,8 @@ export interface TlogsHostContext {
   [key: string]: unknown
 }
 
-/** 安全读取一个可选服务（未注入时会被 cordis 拒绝，必须包住）。 */
-function peek(ctx: TlogsHostContext, name: string): unknown {
+/** 读取一个可选服务：cordis 访问未注入的服务会抛错，必须包住。 */
+function optionalService(ctx: TlogsHostContext, name: string): unknown {
   try {
     return ctx.get?.(name)
   } catch {
@@ -170,33 +111,25 @@ function peek(ctx: TlogsHostContext, name: string): unknown {
   }
 }
 
-/** cordis 连接服务的最小形状（用于 RPC 通道注册）。 */
+/** cordis 连接服务的最小形状（用于注册 RPC 通道）。 */
 interface ConnectionLike {
   rpc?: {
     handle?: (channel: string, handler: unknown, opts?: unknown) => () => void
   }
 }
 
-/** 插件入口。 */
 export function apply(ctx: TlogsHostContext, rawConfig?: TlogsConfig): void {
   const logger: Logger = ctx.logger ?? console
   const resolved: ResolvedConfig = resolveConfig(rawConfig)
 
-  // ---------- 凭据 ----------
-  const secrets = createCredentialStore(() => peek(ctx, 'credentials') as never, logger)
+  const secrets = createCredentialStore(() => optionalService(ctx, 'credentials') as never, logger)
 
-  // 方案 D：复用 DSH 已登录账号的 Platform 会话凭据（零配置）。
-  //
-  // 用**可选**注入拿 deepseekAccount：web 版没有该服务，插件必须照常加载，
-  // 因此不能写进 `export const inject`（那会变成加载前置条件）。
-  //
-  // 安全：拿到服务后立刻**收窄成只暴露一个方法的 facade**。deepseekAccount 上
-  // 还有 `signOut()` / `rejectToken()` 这类会移除本地登录态的破坏性方法；只留
-  // `getPlatformSession`，才能把「本插件不会调用它们」从口头约定变成**结构上的
-  // 不可能** —— 令牌路径根本拿不到那些方法。
+  // 复用 DSH 已登录账号的 Platform 会话凭据（零配置）。deepseekAccount 必须用可选注入拿：web 版没有该服务，
+  // 写进 `export const inject` 会变成加载前置条件。拿到服务后立刻收窄成只暴露一个方法的 facade：那个服务上
+  // 还有 signOut() / rejectToken() 这类会移除本地登录态的破坏性方法，只留 getPlatformSession 才能把
+  // 「本插件不会调用它们」从口头约定变成结构上的不可能。
   let accountSession: { getPlatformSession: () => Promise<unknown> } | undefined
   if (!resolved.useAccountSession) {
-    // 彻底关掉这条路径：**连可选注入都不发起**，插件全程不接触账号服务。
     logger.info?.(
       'tlogs: 已按配置禁用账号会话凭据（useAccountSession: false）；' +
         '只使用环境变量 / 配置 / 本机凭据 / 手动填写',
@@ -206,7 +139,7 @@ export function apply(ctx: TlogsHostContext, rawConfig?: TlogsConfig): void {
       ctx.inject(['deepseekAccount'], (acctCtx) => {
         accountSession = {
           getPlatformSession: () => {
-            const svc = peek(acctCtx, 'deepseekAccount') as Record<string, unknown> | undefined
+            const svc = optionalService(acctCtx, 'deepseekAccount') as Record<string, unknown> | undefined
             const fn = svc?.['getPlatformSession']
             if (typeof fn !== 'function') return Promise.resolve(undefined)
             return (fn as (this: unknown) => Promise<unknown>).call(svc)
@@ -220,15 +153,9 @@ export function apply(ctx: TlogsHostContext, rawConfig?: TlogsConfig): void {
   }
 
   /**
-   * 账号会话凭据的**原始取数口径**（无缓存）。
-   *
-   * 它只被 `TokenManager.beginCredentialLease()` 在**一次刷新开始时**调用一次，
-   * 刷新结束即释放引用 —— 令牌因此不会常驻宿主内存，而客户端每 800ms 一次的
-   * `snapshot → authState` 轮询也完全走不到这里。
-   *
-   * 历史：这里曾有一层「命中 60s / 未命中 15s」的 TTL 缓存，用于压掉轮询带来的
-   * 放大效应。改成租约后那个问题不复存在（轮询路径压根不取令牌），而缓存条目一旦
-   * 写入就再没被清除过 —— 等于把令牌永久留在内存里，比它要压制的放大效应更值得担心。
+   * 账号会话凭据的原始取数口径（无缓存）。它只在一次刷新开始时被 `beginCredentialLease()` 调用一次，
+   * 刷新结束即释放引用，因此令牌不会常驻宿主内存；客户端每 800ms 一次的 snapshot → authState 轮询
+   * 完全走不到这里。
    */
   const tokens = new TokenManager({
     secrets,
@@ -244,10 +171,8 @@ export function apply(ctx: TlogsHostContext, rawConfig?: TlogsConfig): void {
         return undefined
       }
 
-      // 关键：账号会话凭据必须用 `x-dsh-auth-token` 投递。
-      // 实测同一个令牌按 `Authorization: Bearer` 送会被接口回 `40003`，
-      // 换成这个头就返回 `code:0` 的真实用量 —— 头错了而已，凭据本身是好的。
-      // 只记 origin 与脱敏长度。
+      // 账号会话凭据必须用 `x-dsh-auth-token` 投递：同一个令牌按 Authorization: Bearer
+      // 送会被接口回 40003，换成这个头才返回真实用量。日志只记 origin 与脱敏长度。
       logger.info?.(
         `tlogs: 本轮刷新持有账号会话凭据 origin=${session.origin ?? '<unknown>'} token=${redactToken(session.token)}`,
       )
@@ -258,35 +183,21 @@ export function apply(ctx: TlogsHostContext, rawConfig?: TlogsConfig): void {
         headers: session.headers,
       }
     },
-    // 方案 A（按名字盲猜宿主服务的 token getter）已**移除**。
-    //
-    // 它是 confused deputy：插件主动调用自己没有契约的宿主方法，任何名字恰好匹配
-    // 的函数都会被无参调用（可能有副作用）；若返回的是推理令牌或 API Key，还会被
-    // 当作平台会话令牌发往 platform.deepseek.com。方案 D 已经用**有契约的**
-    // Host-only 接口把自动获取做对了，这条猜测路径纯属多余的攻击面。
+    // 不做「按名字盲猜宿主服务的 token getter」：那会无参调用任何名字恰好匹配的
+    // 宿主方法（可能有副作用），还可能把推理令牌或 API Key 当作平台会话令牌发出去。
+    // 上面这条有契约的 Host-only 接口已经把自动获取做对了。
     interactiveLogin: () => interactiveLogin({ logger }),
   })
 
-  // ---------- 历史缓存 ----------
   const history = new HistoryStore()
-  /**
-   * 项目用量的逐日快照。
-   *
-   * 与 `history` 同文件落盘（同一个 JSON 的两个顶层键），但语义独立：它读的是宿主
-   * 会话投影，与平台账单无关；退出登录时一并清除（「清除本地缓存」应当名副其实）。
-   */
+  /** 项目用量的逐日快照：与 `history` 同存一个 JSON 的两个顶层键下但语义独立，它读宿主会话投影、与平台账单无关，退出登录时一并清除。 */
   const projectHistory = new ProjectHistoryStore()
   /**
-   * 本机口径（第二路数据源）：从 `$DSH_HOME/sessions/**` 的会话日志重建逐日用量。
-   *
-   * 平台接口只覆盖 DeepSeek 官方通道、且当天要等平台结算；本机口径实时、覆盖本机
-   * 所有供应商（含火山方舟/小米/GLM 等平台看不到的）。只读日志，且 `localUsage: false`
-   * 时**完全不创建**（连目录都不列）。
+   * 本机口径（第二路数据源）：从会话日志重建逐日用量。平台接口只覆盖官方通道且当天要等结算；本机口径
+   * 实时、覆盖本机所有供应商。只读日志，`localUsage: false` 时连目录都不列。
    */
   const localUsage = resolved.localUsage
     ? new SessionUsageStore({
-        // 候选目录：web/CLI 是 `<DSH_HOME>/sessions`，桌面端 DSH_HOME 指向
-        // `<主目录>/profiles/<profile>`，会话日志其实在 `<主目录>/sessions`。
         roots: sessionDirCandidates(),
         logger,
         maxDays: resolved.localUsageScanDays,
@@ -299,8 +210,7 @@ export function apply(ctx: TlogsHostContext, rawConfig?: TlogsConfig): void {
   })
 
   /**
-   * 落盘内容：历史月份 + 项目快照 + 本机逐日用量（都只有数字，没有任何凭据/文本；
-   * 本机口径的会话日志路径只落**不可逆短哈希**，见 store/session-usage.ts）。
+   * 落盘内容：历史月份 + 项目快照 + 本机逐日用量，都只有数字，没有任何凭据或文本；本机口径的会话日志路径只落不可逆短哈希（见 store/session-usage.ts）。
    */
   const snapshotForDisk = (): unknown => ({
     ...history.serialize(),
@@ -308,10 +218,8 @@ export function apply(ctx: TlogsHostContext, rawConfig?: TlogsConfig): void {
     ...(localUsage ? { localUsage: localUsage.serialize() } : {}),
   })
 
-  // ---------- 项目用量来源（P2，不可用时优雅降级） ----------
   const projectProvider: ProjectUsageProvider = createProjectProvider(ctx, logger)
 
-  // ---------- 服务 ----------
   const service = new UsageService({
     config: resolved,
     history,
@@ -319,20 +227,20 @@ export function apply(ctx: TlogsHostContext, rawConfig?: TlogsConfig): void {
     resolveToken: () => tokens.resolve(),
     onAuthInvalid: (token, message) => tokens.markInvalid(token, message),
     authState: () => tokens.state(),
-    // 账号会话凭据的租约：刷新开始时取来，刷新结束（含异常）立刻释放。
-    // 这是唯一会向宿主索取凭据的时机；其余时间它不在本插件内存里。
+    // 凭据租约：刷新开始时取来，刷新结束（含异常）立刻释放。这是唯一会向宿主索取
+    // 凭据的时机，其余时间它不在本插件内存里。
     beginCredentialLease: () => tokens.beginCredentialLease(),
     endCredentialLease: () => tokens.endCredentialLease(),
     logger,
     projectProvider,
     ...(localUsage ? { localUsage } : {}),
     onChanged: () => scheduleSave(),
-    // 客户端据此把「登录」按钮置灰：桌面端的插件宿主是 Electron-as-Node
-    // 子进程，创建不了 BrowserWindow，登录窗口从来就打不开。
+    // 客户端据此把「登录」按钮置灰：桌面端的插件宿主创建不了 BrowserWindow，
+    // 登录窗口从来就打不开。
     loginAvailable: () => canInteractiveLogin(),
   })
 
-  // ---------- 缓存落盘（去抖动，避免逐月请求每次都写盘） ----------
+  // 落盘去抖动：逐月请求期间不写盘，安静 2 秒后才写一次。
   let saveTimer: ReturnType<typeof setTimeout> | undefined
   const scheduleSave = () => {
     if (!resolved.persistHistory) return
@@ -345,7 +253,7 @@ export function apply(ctx: TlogsHostContext, rawConfig?: TlogsConfig): void {
     ;(saveTimer as unknown as { unref?: () => void }).unref?.()
   }
 
-  // ---------- 启动：恢复缓存 → 首次刷新 ----------
+  // 启动：恢复缓存 → 首次刷新。放后台，不阻塞插件加载。
   void (async () => {
     try {
       const saved = await cache.load()
@@ -363,34 +271,27 @@ export function apply(ctx: TlogsHostContext, rawConfig?: TlogsConfig): void {
     } catch (e) {
       logger.warn?.(`tlogs: 恢复缓存失败：${e instanceof Error ? e.message : String(e)}`)
     }
-    // 首次挂载自动刷新一次（需求 1.5）。放在后台，不阻塞插件加载。
     service.startRefresh('mount')
   })()
 
-  // ---------- 定时自动刷新 ----------
-  //
-  // 之前**完全没有**这个定时器：数据只在「挂载」和「展开面板」时按 TTL 刷新一次，
-  // 应用长时间开着不动就不会更新。这里补上，默认 5 分钟。
-  //
-  // 它只决定「多久触发一次」，真正会打哪些月份仍由 cacheTTL 判定（当前范围 5 分钟、
-  // 全量历史 30 分钟），所以不会每 5 分钟就把 31 个月全拉一遍。
+  // 定时自动刷新：它只决定多久触发一次，真正打哪些月份仍由 cacheTTL 判定
+  // （当月 5 分钟、全量历史 30 分钟），所以不会每 5 分钟就把 31 个月全拉一遍。
   if (resolved.autoRefreshSeconds > 0) {
-    const periodMs = resolved.autoRefreshSeconds * 1000
     const timer = setInterval(() => {
       try {
         service.startRefresh('scheduled')
       } catch (e) {
         logger.warn?.(`tlogs: 定时刷新失败：${e instanceof Error ? e.message : String(e)}`)
       }
-    }, periodMs)
+    }, resolved.autoRefreshSeconds * 1000)
     // Node 的定时器不该拖住进程退出。
     ;(timer as unknown as { unref?: () => void }).unref?.()
-    const disposeTimer = () => clearInterval(timer)
-    if (typeof ctx.effect === 'function') ctx.effect(() => disposeTimer, 'tlogs: auto refresh dispose')
+    if (typeof ctx.effect === 'function') {
+      ctx.effect(() => () => clearInterval(timer), 'tlogs: auto refresh dispose')
+    }
     logger.info?.(`tlogs: 已启用定时自动刷新，间隔 ${resolved.autoRefreshSeconds}s`)
   }
 
-  // ---------- RPC 通道（需求 4.1：host 端负责数据获取） ----------
   const handle = makeRpcHandler({
     service,
     tokens,
@@ -410,12 +311,13 @@ export function apply(ctx: TlogsHostContext, rawConfig?: TlogsConfig): void {
       return
     }
 
-    // cordis 的 rpc getter 会把句柄绑在原始服务上下文上；这里按以下步骤把它
-    // 重新绑定到本次注入的 web 上下文，`rpc.handle()` 才能注册到 webServer 上。
-    // 该处理与已发布的 dsh-workspace-mover 在 0.1.5+/0.2.x 上的做法逐行一致。
+    // cordis 的 rpc getter 把句柄绑在原始服务上下文上，这里需要重新绑定到本次注入的
+    // web 上下文，`rpc.handle()` 才能注册到 webServer 上（与已发布的
+    // dsh-workspace-mover 在 0.2.x 上的做法一致）。
     const rawConnection =
-      ((connection as unknown as Record<symbol, unknown>)[Symbol.for('cordis.original')] as ConnectionLike | undefined) ??
-      connection
+      ((connection as unknown as Record<symbol, unknown>)[Symbol.for('cordis.original')] as
+        | ConnectionLike
+        | undefined) ?? connection
     const extend = (rawConnection as unknown as Record<symbol, unknown>)[Symbol.for('cordis.extend')]
     const scopedConnection =
       typeof extend === 'function'
@@ -428,14 +330,11 @@ export function apply(ctx: TlogsHostContext, rawConfig?: TlogsConfig): void {
       return
     }
 
-    // 注意：0.2.0-rc.2 的 `rpc.handle` 只接受 (channel, handler)。
-    // 旧版本文档里的 `{ authority: 'loopback' }` 在现代 DSH 里是 no-op
-    // （已核对源码：没有方法级的 loopback 分级），因此这里不再传入。
-    // 真正的保护来自连接本身：所有 RPC 都要求浏览器会话 Cookie（否则 401），
-    // 并且经过 Host/Origin 围栏（否则 403），所以非本机来源无法访问该通道。
-    const dispose = scopedConnection.rpc.handle(
-      TLOGS_CHANNEL,
-      async (endpoint: string, payload: Record<string, unknown> = {}) => handle(endpoint, payload ?? {}),
+    // 0.2.x 的 rpc.handle 只接受 (channel, handler)；旧文档里的 loopback 选项在现行
+    // DSH 里是 no-op，真正的保护来自连接本身：所有 RPC 都要求浏览器会话 Cookie
+    // （否则 401）并经过 Host/Origin 围栏（否则 403），非本机来源进不来。
+    const dispose = scopedConnection.rpc.handle(TLOGS_CHANNEL, async (endpoint: string, payload: Record<string, unknown> = {}) =>
+      handle(endpoint, payload ?? {}),
     )
 
     ctx.effect?.(() => () => {
@@ -448,8 +347,8 @@ export function apply(ctx: TlogsHostContext, rawConfig?: TlogsConfig): void {
   }
 
   if (typeof ctx.inject === 'function') {
-    // 包住：某些宿主里 `inject` 对未注册服务会直接抛错。RPC 挂不上只是 UI
-    // 拿不到数据，绝不能让整个插件（连同 query_token_usage 工具）加载失败。
+    // 包住：某些宿主里 inject 对未注册服务会直接抛错。RPC 挂不上只是 UI 拿不到数据，
+    // 绝不能让整个插件（连同 query_token_usage 工具）加载失败。
     try {
       ctx.inject(['connection', 'webServer'], (webCtx) => mountRpc(webCtx))
     } catch (e) {
@@ -461,10 +360,8 @@ export function apply(ctx: TlogsHostContext, rawConfig?: TlogsConfig): void {
     mountRpc(ctx)
   }
 
-  // ---------- 面向模型的工具（需求 4.3） ----------
-  //
-  // 默认**不注册**：工具的返回值就是模型上下文，注册即意味着用量数字会离开
-  // 本机。只有显式打开 `exposeUsageToModel` 才暴露给模型。
+  // 面向模型的工具默认不注册：工具的返回值就是模型上下文，注册即意味着用量数字会
+  // 离开本机。只有显式打开 `exposeUsageToModel` 才暴露。
   if (!resolved.exposeUsageToModel) {
     logger.info?.(
       'tlogs: 用量数字不暴露给模型（query_token_usage 未注册）；' +

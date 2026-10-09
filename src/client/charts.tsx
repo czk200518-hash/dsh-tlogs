@@ -1,18 +1,15 @@
 /**
- * tlogs — 三种图表组件（折线图 / 环形饼图 / 堆叠柱状图）。
+ * tlogs — the three chart components: line, donut and stacked bar.
  *
- * 全部是**手写 SVG**，没有引入任何图表库：
- *  - 客户端 bundle 只允许同步 require 平台种子表里的 react，其它依赖都得打进
- *    bundle；一个图表库动辄几百 KB，而这里真正需要的只是几条 path 与几个 rect。
- *  - 手写还能让配色全部走主题 token（浅色/深色主题自动跟着翻转）。
+ * Hand-written SVG, no chart library: inside the client bundle only React resolves from the
+ * platform seed table, and a chart library costs hundreds of KB for a few paths and rects.
+ * Hand-written also lets every colour come from a theme token. All geometry lives in
+ * chart-utils.ts; this file only assembles the SVG.
  *
- * 交互约定（三张图一致，避免「每张图鼠标行为都不一样」）：
- *  - 悬停即高亮，**明细固定显示在图表下方的信息条里**，不做跟随鼠标的浮层。
- *    理由：跟随浮层要么用 `position: absolute`（内嵌部分明令禁止），要么让图表
- *    高度随内容跳动 —— 两者都比「固定一行的明细」差。
- *  - 信息条高度写死，悬停切换时布局不抖动。
- *
- * 几何换算全部放在 chart-utils.ts（纯函数、有单测）；本文件只负责拼 SVG。
+ * Interaction is the same in all three: hovering highlights the element, and the details always
+ * land in a fixed-height info bar under the chart rather than in a cursor-following overlay —
+ * an overlay would need position: absolute (not allowed in the in-flow parts) or make the chart
+ * grow with its content.
  */
 
 import * as React from 'react'
@@ -32,21 +29,18 @@ import {
 import { useT, type MessageKey, type Translator } from './i18n/index.js'
 import type { Stat } from '../types.js'
 
-/** 三种图共用的画布宽度（viewBox 单位）；渲染时按 100% 宽等比缩放。 */
 const VB_W = 720
 
-/** 折线图布局。 */
 const LINE_H = 220
 const PAD_L = 54
 const PAD_R = 10
 const PAD_T = 10
 const PAD_B = 24
 
-/** 堆叠柱布局（x 轴标签与图例都更占地方）。 */
+/* The bar's x labels and legend need more bottom room. */
 const BAR_H = 236
 const BAR_PAD_B = 38
 
-/** 环形图布局。 */
 const DONUT = 170
 const DONUT_R = 62
 const DONUT_W = 17
@@ -54,15 +48,9 @@ const DONUT_W = 17
 const lineInner = { w: VB_W - PAD_L - PAD_R, h: LINE_H - PAD_T - PAD_B }
 const barInner = { w: VB_W - PAD_L - PAD_R, h: BAR_H - PAD_T - BAR_PAD_B }
 
-/** 单位后缀。金额用「元」；请求用「次」；token 无后缀。 */
-function suffixOf(unit: MetricUnit, t: Translator): string {
-  return metricSuffix(unit, t)
-}
-
 /**
- * 按单位选择数值格式。
- *
- * 金额**绝不能**走 `formatShort`：那会把 ¥172.48 显示成「172」，看起来像 token 数。
+ * Money must never go through formatShort: it would print ¥172.48 as "172", which reads as a
+ * token count.
  */
 function formatValue(v: number, unit: MetricUnit, mode: 'full' | 'short' = 'short'): string {
   if (unit === 'money') return mode === 'full' ? formatMoneyFull(v) : formatMoneyShort(v)
@@ -70,7 +58,7 @@ function formatValue(v: number, unit: MetricUnit, mode: 'full' | 'short' = 'shor
   return mode === 'full' ? formatFull(Math.round(v)) : formatShort(v)
 }
 
-/** 三段构成（所有图共用的「输入命中/未命中/输出」口径）。 */
+/** The three-part breakdown shared by every chart (cache hit / cache miss / output). */
 function breakdownOf(stat: Stat, t: Translator): Array<{ label: string; value: string }> {
   return [
     { label: t('chart.breakdown.hit'), value: formatFull(stat.PROMPT_CACHE_HIT_TOKEN) },
@@ -82,7 +70,7 @@ function breakdownOf(stat: Stat, t: Translator): Array<{ label: string; value: s
   ]
 }
 
-/** 悬停明细条：固定高度，避免切换时抖动。 */
+/** Hover details; the fixed height keeps the layout still while moving between points. */
 function InfoBar(props: {
   point: ChartPoint | null
   unit: MetricUnit
@@ -100,7 +88,7 @@ function InfoBar(props: {
         </span>
         <span className="tlogs-metric-value">
           {formatValue(point.value, unit, 'full')}
-          {suffixOf(unit, t)}
+          {metricSuffix(unit, t)}
         </span>
       </span>
       {breakdownOf(point.stat, t).map((e) => (
@@ -114,10 +102,10 @@ function InfoBar(props: {
 }
 
 /**
- * 汇总一行（合计 / 最高 / 最低 / 均值）。
+ * Summary row (total / max / min / avg).
  *
- * 金额与请求数都按千分位显示「完整值」：¥ 的缩写（万/亿）在「均值」这种小数场景下
- * 会失去精度，反而更难读。
+ * Money and request counts print the full value: the abbreviated ten-thousand / hundred-
+ * million scale loses precision exactly where an average needs it.
  */
 function Summary(props: { values: number[]; unit: MetricUnit }): React.ReactElement {
   const { values, unit } = props
@@ -140,7 +128,7 @@ function Summary(props: { values: number[]; unit: MetricUnit }): React.ReactElem
           <span className="tlogs-metric-label">{t(labelKey)}</span>
           <span className="tlogs-metric-value">
             {unit === 'tokens' && isAvg ? formatShort(v) : formatValue(v, unit, 'short')}
-            {isAvg || unit === 'tokens' ? '' : suffixOf(unit, t)}
+            {isAvg || unit === 'tokens' ? '' : metricSuffix(unit, t)}
           </span>
         </span>
       ))}
@@ -148,7 +136,6 @@ function Summary(props: { values: number[]; unit: MetricUnit }): React.ReactElem
   )
 }
 
-/** y 轴刻度线 + 标签（三张图共用同一段）。 */
 function Axis(props: {
   ticks: number[]
   max: number
@@ -173,7 +160,6 @@ function Axis(props: {
   )
 }
 
-/** x 轴标签。 */
 function AxisLabels(props: {
   points: ChartPoint[]
   xs: Array<[number, number]>
@@ -201,12 +187,10 @@ function AxisLabels(props: {
   )
 }
 
-// ------------------------------------------------------------------ 折线图
-
 export interface LineChartProps {
   points: ChartPoint[]
   unit: MetricUnit
-  /** 是否处于「累计」口径（只影响提示文案）。 */
+  /** Cumulative mode; only changes the hint text. */
   cumulative: boolean
 }
 
@@ -283,15 +267,13 @@ export function LineChart(props: LineChartProps): React.ReactElement {
   )
 }
 
-// ------------------------------------------------------------- 堆叠柱状图
-
 export interface StackedBarProps {
   points: ChartPoint[]
 }
 
 /**
- * 堆叠柱状图：每根柱子把
- * **输入（缓存命中）/ 输入（缓存未命中）/ 输出** 三段堆起来，再叠加一条请求数虚线。
+ * Stacked bar: each bar stacks cache-hit / cache-miss / output tokens and overlays a dashed
+ * request-count line on its own scale.
  */
 export function StackedBarChart(props: StackedBarProps): React.ReactElement {
   const { points } = props
@@ -416,8 +398,6 @@ export function StackedBarChart(props: StackedBarProps): React.ReactElement {
   )
 }
 
-// ------------------------------------------------------------------ 环形饼图
-
 export interface DonutDatum {
   key: string
   label: string
@@ -428,19 +408,20 @@ export interface DonutDatum {
 
 export interface DonutChartProps {
   slices: DonutDatum[]
-  /** 环形中心的标题（无悬停时显示）。 */
+  /** Donut centre label, shown while nothing is hovered. */
   centerLabel: string
-  /** 环形中心的数值（无悬停时显示）。 */
+  /** Donut centre value, shown while nothing is hovered. */
   centerValue: string
   unit: MetricUnit
   emptyText?: string
 }
 
 /**
- * 环形饼图。
+ * Donut chart.
  *
- * 用 `stroke-dasharray` 画每一段，而不是 path 弧线：**只剩一段（100%）时 path 弧线
- * 会退化**（起点与终点重合，SVG 直接不画），dasharray 天然正确。
+ * Segments are drawn with stroke-dasharray instead of path arcs: a lone 100% segment
+ * degenerates as an arc (start and end coincide, so SVG draws nothing), while dasharray is
+ * correct by construction.
  */
 export function DonutChart(props: DonutChartProps): React.ReactElement {
   const { slices, centerLabel, centerValue, unit, emptyText } = props
@@ -514,7 +495,7 @@ export function DonutChart(props: DonutChartProps): React.ReactElement {
               className={hover === i ? 'tlogs-legend-row is-active' : 'tlogs-legend-row'}
               onMouseEnter={() => setHover(i)}
               onMouseLeave={() => setHover((cur) => (cur === i ? null : cur))}
-              title={`${s.label} · ${formatFull(s.value)}${suffixOf(unit, t)}`}
+              title={`${s.label} · ${formatFull(s.value)}${metricSuffix(unit, t)}`}
             >
               <i className={`tlogs-swatch tlogs-swatch-c${(s.colorIndex % 6) + 1}`} />
               <span className="tlogs-legend-name">{s.label}</span>
@@ -528,8 +509,6 @@ export function DonutChart(props: DonutChartProps): React.ReactElement {
     </Fragment>
   )
 }
-
-// ------------------------------------------------------------------ 小工具
 
 function maxOfArray(values: number[]): number {
   let max = 0

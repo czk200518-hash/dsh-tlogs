@@ -1,15 +1,12 @@
 /**
- * tlogs — 「图表」页签（详细数据弹窗内）。
+ * tlogs — the "charts" tab inside the detail modal.
  *
- * 三张图共享同一套控制项，**切换任意控制项三张图一起变**：
- *   范围（有史以来 / 自定义 / 今日 / 本周 / 本月）× 数据源（平台账单 / 指定项目）
- *   × 指标（总 Token / 输入 / 输出 / 缓存命中 / 缓存未命中 / 请求数）× 粒度（自动/天/月/年）
- *
- * 数据来源的口径差异（重要，别混）：
- *  - **平台账单**：账号维度，接口按天返回逐日明细，可回溯到配置的历史起点。
- *  - **指定项目**：只存在于本机。宿主只给「累计至今」一个数，因此趋势依赖插件
- *    自己每天记的快照（`store/project-history.ts`），**无法回溯到启用之前**。
- *    这一点在选中项目时会明确写在界面上，而不是让用户对着一张空图猜。
+ * The three sub-tabs share one set of controls (range / source / metric / grain) and all of
+ * them follow any change. The two sources must not be mixed: platform billing is account-wide
+ * with per-day detail back to the configured history start, while a project exists locally
+ * only — the host reports one "so far" number, so the trend depends on the daily snapshots the
+ * plugin records (store/project-history.ts) and cannot reach back before it was enabled. The
+ * UI says so while a project is selected instead of showing an empty chart.
  */
 
 import * as React from 'react'
@@ -40,15 +37,16 @@ import { useT, type MessageKey } from './i18n/index.js'
 
 export interface ChartPanelProps {
   series: UsageSeries | null
-  /** 是否正在请求新的图表数据。 */
+  /** Whether new chart data is being requested. */
   loading: boolean
   error?: string | null
   onLoad: (query: SeriesQuery) => void
 }
 
 /**
- * 下面几张控制项表里存的是**键**而不是文案：文案必须随语言实时变，
- * 只能在渲染时翻译（模块加载时定死的话，切语言后这一排按钮不会更新）。
+ * These tables hold keys rather than text: the labels have to change with the language, so
+ * they are resolved at render time. Freezing them at module load would leave this row in the
+ * language that was active when the module was imported.
  */
 const RANGES: ReadonlyArray<{ id: ChartRange; labelKey: MessageKey }> = [
   { id: 'all', labelKey: 'chart.range.all' },
@@ -56,8 +54,8 @@ const RANGES: ReadonlyArray<{ id: ChartRange; labelKey: MessageKey }> = [
   { id: 'today', labelKey: 'chart.range.today' },
   { id: 'week', labelKey: 'chart.range.week' },
   { id: 'month', labelKey: 'chart.range.month' },
-  // 与控制台「时间维度」一致的两个滚动窗口。做成图表的范围预设后，
-  // 用户可以直接对着控制台把同一条曲线比出来。
+  // The same two rolling windows the console offers as its time dimension, so the user can
+  // compare a curve one to one against the console.
   { id: 'last7', labelKey: 'chart.range.last7' },
   { id: 'last30', labelKey: 'chart.range.last30' },
 ]
@@ -72,7 +70,7 @@ const PIE_DIMS: ReadonlyArray<{ id: PieDim; labelKey: MessageKey }> = [
 
 type LineMode = 'perBucket' | 'cumulative'
 
-/** 三张图作为「图表」页签下的**子标签**切换（同屏只画一张）。 */
+/** The three charts are sub-tabs of the chart tab; only one is drawn at a time. */
 type ChartKind = 'line' | 'pie' | 'bar'
 
 const KINDS: ReadonlyArray<{ id: ChartKind; labelKey: MessageKey }> = [
@@ -81,20 +79,20 @@ const KINDS: ReadonlyArray<{ id: ChartKind; labelKey: MessageKey }> = [
   { id: 'bar', labelKey: 'chart.kind.bar' },
 ]
 
-/** 本地今天（`YYYY-MM-DD`）。 */
+/** Local date key, `YYYY-MM-DD`. */
 function todayKey(): string {
   const d = new Date()
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
-/** 本地 N 天前。 */
+/** Local date key N days back. */
 function daysAgoKey(n: number): string {
   const d = new Date()
   d.setDate(d.getDate() - n)
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
-/** 空的五类计量项（用于「构成」聚合）。 */
+/** An all-zero Stat, used as the accumulator when summing rows. */
 function zeroStat(): Stat {
   return {
     PROMPT_TOKEN: 0,
@@ -105,22 +103,21 @@ function zeroStat(): Stat {
   }
 }
 
-/** 空的金额五类。 */
 function zeroMoney(): Money {
   return zeroStat()
 }
 
 /**
- * 累计模式的起点值。
+ * Starting value for cumulative mode.
  *
- * 金额不在 `Stat` 里，必须单独取 `priorCost`；否则切到「累计 + 消费金额」时
- * 曲线会从 0 起跳（与 token 侧的行为不一致）。
+ * Money is not part of `Stat`, so `priorCost` comes in separately; without it, switching to
+ * cumulative while showing cost would start the curve at 0, unlike the token metrics.
  */
 function priorValue(stat: Stat, cost: number | undefined, metric: ChartMetric): number {
   return metric === 'cost' ? (cost ?? 0) : metricValue(stat, metric)
 }
 
-/** 把若干 Stat 相加。 */
+/** Add up several Stat rows. */
 function sumStats(list: Stat[]): Stat {
   const acc = zeroStat()
   for (const s of list) {
@@ -145,14 +142,15 @@ export function ChartPanel(props: ChartPanelProps): React.ReactElement {
   const [grain, setGrain] = React.useState<ChartGrain>('auto')
   const [mode, setMode] = React.useState<LineMode>('perBucket')
   const [pieDim, setPieDim] = React.useState<PieDim>('model')
-  /** 当前显示哪张图（子标签）。切它**不发请求**，只换渲染。 */
+  /** Which chart is shown. Switching it re-renders only, no request. */
   const [kind, setKind] = React.useState<ChartKind>('line')
 
   /**
-   * 只在「查询参数真的变了」时发请求。
+   * Fires only when the query parameters really changed.
    *
-   * 用签名字符串（而不是把 series 放进依赖）是为了避免「请求 → 新 series →
-   * 触发 effect → 再请求」的循环：series 变化不改变签名，因此不会重发。
+   * The signature string keeps `series` out of the dependency list on purpose: otherwise a
+   * new response would retrigger the effect and start a request loop. A new series leaves the
+   * signature unchanged, so nothing is re-sent.
    */
   const lastSig = React.useRef('')
   React.useEffect(() => {
@@ -173,10 +171,12 @@ export function ChartPanel(props: ChartPanelProps): React.ReactElement {
   const selectedProject = series?.projects.find((p) => p.id === projectId)
 
   /**
-   * 选中的项目从列表里消失时（宿主重启后会话被清理、项目被删）把选择清掉。
+   * Clear the selection when the chosen project disappears from the list (host restart wipes
+   * the session, project deleted).
    *
-   * 否则 `<select value>` 会指向一个不存在的 option：浏览器显示第一项、而 state
-   * 仍是旧 id，界面与实际查询的数据源对不上。
+   * Otherwise `<select value>` points at an option that no longer exists: the browser shows
+   * the first entry while the state still holds the old id, so the UI no longer matches the
+   * data source being queried.
    */
   React.useEffect(() => {
     if (!projectId || !series) return
@@ -187,7 +187,7 @@ export function ChartPanel(props: ChartPanelProps): React.ReactElement {
 
   const resolvedGrain = series ? resolveGrain(grain, series.from, series.to) : 'day'
 
-  /** 时间桶：项目维度走快照，平台维度按粒度取逐日 / 逐月 / 逐年。 */
+  /** Time buckets: project scope reads snapshots, platform scope follows the resolved grain. */
   const buckets: Bucket[] = React.useMemo(() => {
     if (!series) return []
     if (projectSource) {
@@ -199,7 +199,7 @@ export function ChartPanel(props: ChartPanelProps): React.ReactElement {
     return monthBuckets(series.months)
   }, [series, projectSource, resolvedGrain, mode])
 
-  /** 折线图的数值：平台维度可在「每期」与「累计」之间切；项目维度的桶已内含口径。 */
+  /** Line values: platform scope can switch per-bucket / cumulative; project buckets carry their mode. */
   const values = React.useMemo(() => {
     if (projectSource) return buckets.map((b) => bucketMetricValue(b, metric))
     const prior = mode === 'cumulative' && series ? priorValue(series.prior, series.priorCost, metric) : 0
@@ -211,22 +211,22 @@ export function ChartPanel(props: ChartPanelProps): React.ReactElement {
   const metricDef = METRICS.find((m) => m.id === metric)!
   const unit = metricDef.unit
 
-  /** 范围内的合计（用于环形中心与说明）：只累加**月度合计**，因此不会因缺天而低估。 */
+  /** Range total (donut centre and notes): sums the monthly totals, so missing days cannot understate it. */
   const rangeStat = React.useMemo(
     () => (series ? sumStats(series.months.map((m) => m.stat)) : zeroStat()),
     [series],
   )
 
-  /** 范围内的金额合计（元）。金额不在 `Stat` 里，因此单独累加。 */
+  /** Range money total (CNY). Money is not part of Stat, so it is summed on its own. */
   const rangeCost = React.useMemo(
     () => (series ? series.months.reduce((s, m) => s + (m.cost ?? 0), 0) : 0),
     [series],
   )
 
-  /** 范围内的金额构成（输入命中 / 未命中 / 输出），由 host 一次算好下发。 */
+  /** Range money split by token type; the host computes it in one pass. */
   const rangeMoney: Money = series?.costByType ?? zeroMoney()
 
-  /** 环形图的维度：选中项目时不再有「按模型」——平台模型与该项目无关，会误导。 */
+  /** Donut dimension: a selected project has no "by model" — platform models are unrelated and would mislead. */
   const effectiveDim: PieDim = projectSource && pieDim === 'model' ? 'composition' : pieDim
   const dims = projectSource ? PIE_DIMS.filter((d) => d.id !== 'model') : PIE_DIMS
 
@@ -236,17 +236,18 @@ export function ChartPanel(props: ChartPanelProps): React.ReactElement {
       return series.models.map((m) => ({
         key: m.key,
         label: m.key,
-        // 模型金额只有总额（`SeriesPoint.cost`），没有五类拆分。
+        // Model money exists as a total only (`SeriesPoint.cost`); there is no five-way split.
         value: metric === 'cost' ? (m.cost ?? 0) : metricValue(m.stat, metric),
       }))
     }
     if (effectiveDim === 'project') {
-      // 项目用量来自本机会话投影，平台账单里没有它的金额 —— 明确返回空，
-      // 由饼图的 emptyText 说明，而不是画一张全 0 的图。
+      // Project usage comes from the local session projection and has no money in the
+      // platform bill. Return nothing and let the donut's emptyText explain, rather than
+      // drawing an all-zero chart.
       if (metric === 'cost') return []
       return series.projects.map((p) => ({ key: p.id, label: p.label, value: metricValue(p.stat, metric) }))
     }
-    // 构成维度：金额走 Money 的五类拆分，其余走 Stat。
+    // Composition dimension: money uses Money's token-type split, everything else uses Stat.
     if (metric === 'cost') {
       return [
         { key: 'hit', label: t('chart.legend.hit'), value: rangeMoney.PROMPT_CACHE_HIT_TOKEN },
@@ -266,12 +267,14 @@ export function ChartPanel(props: ChartPanelProps): React.ReactElement {
     ]
   }, [series, effectiveDim, metric, projectSource, rangeStat, rangeMoney, t])
 
-  // 合并项（「其他」）在渲染时才翻译，因此把 t 的当前结果传进去并随 t 重算。
+  // The merged "other" slice is translated at render time, so the current t() result is
+  // passed in and the slices are recomputed when the language changes.
   const slices = React.useMemo(() => pieSlices(pieItems, 8, t('chart.other')), [pieItems, t])
 
   const pickRange = (r: ChartRange) => {
     if (r === 'custom' && (!from || !to)) {
-      // 首次进入自定义：用当前范围当默认值，用户改起来才有对照。
+      // First entry into custom range: seed it with the current range so the user has a
+      // reference point when editing.
       setFrom(series?.from ?? daysAgoKey(30))
       setTo(series?.to ?? todayKey())
     }
@@ -283,9 +286,9 @@ export function ChartPanel(props: ChartPanelProps): React.ReactElement {
   return (
     <Fragment>
       {/*
-        图形子标签：紧贴主页签下面。
-        右侧的「构成维度」只在饼图时出现 —— 它和图形按钮同高，因此出现/消失
-        不会撑动这一行，也就不会推动下面的内容。
+        Sub-tab row right under the main tabs. The composition dimension on the right only
+        exists for the donut; it is as tall as the chart buttons, so appearing or disappearing
+        does not stretch this row or push the content below.
       */}
       <div className="tlogs-subtabs">
         <span className="tlogs-ctl-group" role="group" aria-label={t('chart.aria.kind')}>
@@ -467,7 +470,7 @@ export function ChartPanel(props: ChartPanelProps): React.ReactElement {
               {t('chart.unit.requests')}
             </span>
           </span>
-          {/* 金额回补未完成时曲线会把缺的月份当 0 画，必须说明。 */}
+          {/* An unfinished cost backfill draws the missing months as 0, so it has to be said. */}
           {metric === 'cost' && series.costPartial ? (
             <span className="tlogs-chart-scope-note">{t('chart.costPartial')}</span>
           ) : null}
@@ -506,9 +509,9 @@ export function ChartPanel(props: ChartPanelProps): React.ReactElement {
           ) : null}
 
           {/*
-            固定高度的「舞台」里只放当前选中的那张图。
-            三张图高度不同（折线 220 / 堆叠柱 236 / 环形 170），舞台给统一下界 + 卡片撑满，
-            因此切子标签时下面的内容不会上下跳，弹窗外框更是一个像素都不动。
+            Fixed-height stage holding only the selected chart. The three charts differ in
+            height, so the stage sets a shared floor and the card fills it: switching sub-tabs
+            does not move the content below, and the modal frame does not move at all.
           */}
           <div className="tlogs-chart-stage">
             {kind === 'line' ? (

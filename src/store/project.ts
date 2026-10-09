@@ -1,48 +1,37 @@
 /**
- * tlogs — 「当前项目消耗」数据来源（P2）。
+ * tlogs — 「当前项目消耗」数据源。
  *
- * 实测来源（DSH 0.2.0-rc.2，仅用服务名获取，不 import 任何 @deepseek-ai/* 包）：
+ * 累计用量不能从 `ctx.tokenMeter.measure()` 取，它返回的是上下文压力而非累计消耗；真正的
+ * 累计值在 token-meter 注册的 `tokenUsage` 会话投影里，字段为 `{ uncachedInputTokens,
+ * outputTokens, cacheReadTokens, cacheWriteTokens }`：热会话走
+ * `ctx.sessionProjections.stateOf(session, 'tokenUsage').totals`，冷会话走
+ * `ctx.sessionProjectionCache.cachedSnapshot(header, ['tokenUsage']).values.tokenUsage`。
  *
- *  1. 累计用量不在 tokenMeter。`ctx.tokenMeter.measure()` 返回的是**上下文压力**，
- *     不是累计消耗，绝不能求和。
- *  2. 累计值来自 token-meter 注册的会话投影 `tokenUsage`，字段为
- *     `{ uncachedInputTokens, outputTokens, cacheReadTokens, cacheWriteTokens }`。
- *     读取路径：
- *       热会话  ctx.sessionProjections.stateOf(session, 'tokenUsage').totals
- *       冷会话  ctx.sessionProjectionCache.cachedSnapshot(header, ['tokenUsage']).values.tokenUsage
- *  3. 项目归属用 `session.header.cwd` 分组；`ctx.workspaceRegistry.list()` 只用来取项目标题。
- *  4. 会话枚举：`ctx.sessionQuery.filterSessions([{ kind: 'cwd', values: [dir] }])`
- *     返回 `{ header, live, persisted }`；`ctx.sessions.list()` 只含**活跃**会话。
+ * 项目归属按 `session.header.cwd` 分组（`ctx.workspaceRegistry.list()` 只用来取标题）；会话用
+ * `ctx.sessionQuery.filterSessions([...])` 枚举，它同时覆盖热与冷会话，而
+ * `ctx.sessions.list()` 只有活跃会话，作为 sessionQuery 不可用时的补充。
  *
- * 口径映射（把宿主的四个字段映射到平台账单口径的五类计量项）：
- *   总 Token = uncachedInputTokens + cacheReadTokens + cacheWriteTokens + outputTokens
- *             = PROMPT_CACHE_MISS_TOKEN + PROMPT_CACHE_HIT_TOKEN + PROMPT_TOKEN + RESPONSE_TOKEN
- *   即：cacheRead → PROMPT_CACHE_HIT_TOKEN
- *       uncached + cacheWrite → PROMPT_CACHE_MISS_TOKEN
- *       output → RESPONSE_TOKEN
- *       PROMPT_TOKEN 恒为 0，REQUEST 该来源不提供（记为 0）
- *
- * 任何一步的环境缺失（服务不存在、字段改名、抛错）都会降级为「不可用」，
- * 绝不会影响另外四张卡片与全部数据功能。
+ * 宿主的四个字段映射到平台账单的五类计量项：cacheRead 记 PROMPT_CACHE_HIT_TOKEN，
+ * uncached + cacheWrite 记 PROMPT_CACHE_MISS_TOKEN，output 记 RESPONSE_TOKEN，
+ * PROMPT_TOKEN 恒为 0，REQUEST 这个来源不提供（同样记 0）。服务不存在、字段改名或抛错都只
+ * 降级为「不可用」，不影响其余卡片与数据功能。
  */
 
 import { createHash } from 'node:crypto'
 
 import type { Logger, ProjectUsageProvider } from '../service.js'
-import { emptyStat, type Stat } from '../types.js'
+import { emptyStat, TOKEN_TYPES, type Stat } from '../types.js'
 
 /** 投影键。 */
 const TOKEN_USAGE_PROJECTION = 'tokenUsage'
 
 /**
- * 客户端可见的项目 id：对 cwd 做**不可逆短哈希**。
+ * 客户端可见的项目 id：对 cwd 做不可逆短哈希。
  *
- * 为什么需要：`buildCards()` 的结果会经 RPC 下发到浏览器，而项目 id 原本就是
- * `session.header.cwd` 归一化后的**完整绝对路径**。UI 只显示 `label`（末两级），
- * 因此完整路径没有任何用途，却会把本机目录结构暴露到浏览器层 —— 以及和它同处
- * 一个 JS realm 的其它插件的客户端代码。
- *
- * 哈希后 id 依旧稳定且唯一，客户端「点击切换项目」的逻辑完全不受影响。
+ * `buildCards()` 的结果会经 RPC 下发到浏览器，而项目 id 原本就是 `session.header.cwd`
+ * 归一化后的完整绝对路径；UI 只显示 `label`（末两级），完整路径没有用途，却会把本机目录
+ * 结构暴露给浏览器层，以及和它同处一个 JS realm 的其它插件的客户端代码。哈希后的 id
+ * 依旧稳定唯一，客户端「点击切换项目」的逻辑不受影响。
  */
 export function publicProjectId(cwd: string): string {
   return createHash('sha256').update(cwd).digest('hex').slice(0, 16)
@@ -56,7 +45,7 @@ export interface HostTokenUsage {
   cacheWriteTokens?: number
 }
 
-/** 最小宿主服务形状（全部按「存在且是函数」惰性调用）。 */
+/** 宿主服务的最小形状，全部按「存在且是函数」惰性调用，字段缺失就降级。 */
 interface SessionsLike {
   list?: () => unknown[]
   get?: (id: string) => unknown
@@ -83,11 +72,10 @@ interface HostContextLike {
   get?: (name: string) => unknown
 }
 
-/** 把任意形状的 tokenUsage 归一化成四元组；认不出来返回 undefined。 */
+/** 归一化任意形状的 tokenUsage（宿主字段有 camelCase 与 snake_case 两种拼法，有的还在外层多包一层 totals）；认不出来返回 undefined。 */
 export function readUsageTotals(raw: unknown): Required<HostTokenUsage> | undefined {
   if (!raw || typeof raw !== 'object') return undefined
   const r = raw as Record<string, unknown>
-  // 允许外面再包一层 totals。
   const inner = (r.totals && typeof r.totals === 'object' ? r.totals : r) as Record<string, unknown>
 
   const pick = (...names: string[]): number | undefined => {
@@ -114,20 +102,18 @@ export function readUsageTotals(raw: unknown): Required<HostTokenUsage> | undefi
   }
 }
 
-/** 把宿主四元组映射成平台的五类计量项。 */
+/** 把宿主的四个计数字段映射成平台账单的五类计量项；该来源不提供请求次数（REQUEST 记 0）。 */
 export function toStat(u: Required<HostTokenUsage>): Stat {
   const s = emptyStat()
   s.PROMPT_TOKEN = 0
   s.PROMPT_CACHE_HIT_TOKEN = u.cacheReadTokens
-  // 平台把「未命中缓存」作为计费输入项；缓存写入同样属于未命中侧。
   s.PROMPT_CACHE_MISS_TOKEN = u.uncachedInputTokens + u.cacheWriteTokens
   s.RESPONSE_TOKEN = u.outputTokens
-  // 该来源不提供请求次数。
   s.REQUEST = 0
   return s
 }
 
-/** 从会话对象里取 cwd。 */
+/** cwd 可能挂在会话本身上，也可能在 header 里。 */
 function cwdOf(session: unknown): string | undefined {
   const s = session as { header?: { cwd?: unknown }; cwd?: unknown } | undefined
   const direct = s?.cwd
@@ -149,23 +135,22 @@ function labelFor(cwd: string, titles: Map<string, string>): string {
 }
 
 /**
- * 构造「当前项目消耗」数据源。
- *
- * 可用条件：至少能枚举会话，且至少能读到一种累计用量
- * （热投影 或 冷缓存）。否则返回降级实现。
+ * 构造「当前项目消耗」数据源：至少要能枚举会话、且至少能读到一种累计用量
+ * （热投影或冷缓存），否则返回降级实现。
  */
 export function createProjectProvider(ctx: unknown, logger?: Logger): ProjectUsageProvider {
   const host = ctx as HostContextLike | undefined
   if (typeof host?.get !== 'function') return unavailable()
 
-  const sessions = safeService<SessionsLike>(host, 'sessions')
-  const projections = safeService<ProjectionsLike>(host, 'sessionProjections')
-  const projectionCache = safeService<ProjectionCacheLike>(host, 'sessionProjectionCache')
-  const sessionQuery = safeService<SessionQueryLike>(host, 'sessionQuery')
-  const workspaces = safeService<WorkspaceRegistryLike>(host, 'workspaceRegistry')
+  const sessions = optionalService<SessionsLike>(host, 'sessions')
+  const projections = optionalService<ProjectionsLike>(host, 'sessionProjections')
+  const projectionCache = optionalService<ProjectionCacheLike>(host, 'sessionProjectionCache')
+  const sessionQuery = optionalService<SessionQueryLike>(host, 'sessionQuery')
+  const workspaces = optionalService<WorkspaceRegistryLike>(host, 'workspaceRegistry')
 
   const canLive = typeof sessions?.list === 'function' && typeof projections?.stateOf === 'function'
   const canCold = typeof projectionCache?.cachedSnapshot === 'function'
+  // sessionQuery 覆盖热+冷会话，sessions.list 只有活跃会话，仅作补充。
   const canEnumerate = typeof sessions?.list === 'function' || typeof sessionQuery?.filterSessions === 'function'
 
   if (!canEnumerate || (!canLive && !canCold)) {
@@ -179,15 +164,17 @@ export function createProjectProvider(ctx: unknown, logger?: Logger): ProjectUsa
     `tlogs: 启用「当前项目消耗」（热投影=${canLive ? '可用' : '不可用'}，冷缓存=${canCold ? '可用' : '不可用'}）`,
   )
 
-  /** 读取单个会话的累计用量：热投影优先，其次冷缓存。 */
-  const statOfSession = (session: unknown, header?: unknown): Stat | undefined => {
+  // 读单个会话的累计用量：热投影优先，其次冷缓存（冷缓存要 header 才有得读）；
+  // 返回 undefined 表示未知。
+  const totalsOfSession = (session: unknown, header?: unknown): Stat | undefined => {
+    // 热投影优先，其次冷缓存（冷缓存要 header 才有得读）。
     if (canLive) {
       try {
         const state = projections!.stateOf!(session, TOKEN_USAGE_PROJECTION)
         const totals = readUsageTotals(state?.totals ?? state)
         if (totals) return toStat(totals)
       } catch {
-        /* 落到冷缓存 */
+        /* 热读失败就落到冷缓存 */
       }
     }
     if (canCold && header !== undefined) {
@@ -196,7 +183,7 @@ export function createProjectProvider(ctx: unknown, logger?: Logger): ProjectUsa
         const totals = readUsageTotals(snap?.values?.[TOKEN_USAGE_PROJECTION])
         if (totals) return toStat(totals)
       } catch {
-        /* 忽略 */
+        /* 冷读也没有，当作未知 */
       }
     }
     return undefined
@@ -211,7 +198,7 @@ export function createProjectProvider(ctx: unknown, logger?: Logger): ProjectUsa
         if (path && title) map.set(path, title)
       }
     } catch {
-      /* 标题只是展示用，失败无所谓 */
+      /* 标题只影响展示，读不到就算了 */
     }
     return map
   }
@@ -225,20 +212,15 @@ export function createProjectProvider(ctx: unknown, logger?: Logger): ProjectUsa
       const add = (cwd: string, stat: Stat) => {
         const key = cwd.replace(/[\\/]+$/, '')
         const acc = perProject.get(key)
-        if (acc) {
-          acc.PROMPT_TOKEN += stat.PROMPT_TOKEN
-          acc.PROMPT_CACHE_HIT_TOKEN += stat.PROMPT_CACHE_HIT_TOKEN
-          acc.PROMPT_CACHE_MISS_TOKEN += stat.PROMPT_CACHE_MISS_TOKEN
-          acc.RESPONSE_TOKEN += stat.RESPONSE_TOKEN
-          acc.REQUEST += stat.REQUEST
-        } else {
+        if (!acc) {
           perProject.set(key, { ...stat })
+          return
         }
+        for (const t of TOKEN_TYPES) acc[t] += stat[t]
       }
 
       const seen = new Set<unknown>()
 
-      // ---- ① 通过 sessionQuery 枚举（同时覆盖热与冷会话）----
       if (typeof sessionQuery?.filterSessions === 'function') {
         try {
           const records = sessionQuery.filterSessions([]) ?? []
@@ -247,7 +229,7 @@ export function createProjectProvider(ctx: unknown, logger?: Logger): ProjectUsa
             const cwd = cwdOf({ header: r.header })
             if (!cwd) continue
             if (r.session) seen.add(r.session)
-            const stat = statOfSession(r.live === true ? r.session ?? r.header : undefined, r.header)
+            const stat = totalsOfSession(r.live === true ? r.session ?? r.header : undefined, r.header)
             if (stat) add(cwd, stat)
           }
         } catch (e) {
@@ -255,14 +237,13 @@ export function createProjectProvider(ctx: unknown, logger?: Logger): ProjectUsa
         }
       }
 
-      // ---- ② 补充活跃会话（避免 sessionQuery 不可用时完全没有数据）----
       if (typeof sessions?.list === 'function') {
         try {
           for (const session of sessions.list() ?? []) {
             if (seen.has(session)) continue
             const cwd = cwdOf(session)
             if (!cwd) continue
-            const stat = statOfSession(session)
+            const stat = totalsOfSession(session)
             if (stat) add(cwd, stat)
           }
         } catch (e) {
@@ -281,8 +262,8 @@ export function createProjectProvider(ctx: unknown, logger?: Logger): ProjectUsa
   }
 }
 
-/** 安全获取可选服务（cordis 访问未注入服务会抛错）。 */
-function safeService<T>(host: HostContextLike, name: string): T | undefined {
+/** 取某个可选宿主服务；cordis 里访问未注入的服务会抛错，所以这里吞掉。 */
+function optionalService<T>(host: HostContextLike, name: string): T | undefined {
   try {
     const v = host.get?.(name)
     return v && typeof v === 'object' ? (v as T) : undefined

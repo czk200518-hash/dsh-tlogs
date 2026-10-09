@@ -1,27 +1,10 @@
 /**
- * tlogs — 组件样式。
+ * tlogs — component stylesheet.
  *
- * 设计要求（需求 1.1 / 7.3）：
- *  - **不使用** `position: fixed` 或 `position: absolute`；组件完全在文档流内，
- *    由侧边栏页脚的既有布局自然排布
- *  - 紧凑条高 28–32px
- *  - 展开面板就地撑开（把上方内容顶上去），而不是覆盖
- *  - 浅色 / 深色主题都正常显示
- *
- * 主题策略（不猜 token）：直接复用 DSH 真实的主题 token。
- * 这些名字来自 0.2.0-rc.2 的 `@deepseek-ai/dsh-client-ui-theme`：
- *   - 深色主题选择器是 `body[data-ds-dark-theme]`（token 值由主题表翻转，
- *     因此这里无需自己写深色覆盖）
- *   - 文字 `--dsw-alias-label-primary` / `-secondary` / `-tertiary`
- *   - 面板底色 `--dsw-alias-bg-layer-1` / `-2`
- *   - 描边 `--dsw-alias-border-l3` / `-l4`
- *   - 悬停 `--dsw-alias-interactive-bg-hover`
- *   - 强调 `--dsw-alias-state-business-primary`
- *   - 警告 / 错误 `--dsw-alias-state-warn-primary` / `--dsw-alias-state-error-primary`
- *   - 圆角 `--dsw-radius-xs`，字体 `--dsw-font-family`
- *
- * 每个 token 都带 fallback（`var(--token, fallback)`），因此即使宿主的
- * 主题包缺失或改名，组件仍可读、不会出现透明文字。
+ * The compact bar and the expanded panel stay in the sidebar footer's document flow, so neither
+ * uses position: fixed/absolute; the detail modal is the one deliberate exception. Colours come
+ * from DSH theme tokens (the dark theme flips them through `body[data-ds-dark-theme]`) and every
+ * token is read as `var(--token, fallback)`, so a missing host token still renders readable text.
  */
 
 export const STYLE_ID = 'tlogs-style'
@@ -29,7 +12,7 @@ export const PLUGIN_ID = 'tlogs'
 
 export const CSS = `
 .tlogs {
-  /* ---- 主题 token 别名（带 fallback，宿主 token 缺失也能渲染） ---- */
+  /* Theme token aliases; each one carries a fallback. */
   --tlogs-fg: var(--dsw-alias-label-primary, currentColor);
   --tlogs-muted: var(--dsw-alias-label-tertiary, color-mix(in srgb, currentColor 58%, transparent));
   --tlogs-card-bg: var(--dsw-alias-bg-layer-1, color-mix(in srgb, currentColor 6%, transparent));
@@ -40,24 +23,16 @@ export const CSS = `
   --tlogs-accent: var(--dsw-alias-state-business-primary, #4d6bfe);
   --tlogs-warn: var(--dsw-alias-state-warn-primary, #d97706);
   --tlogs-danger: var(--dsw-alias-state-error-primary, #dc2626);
-  /*
-   * 金额专用色。
-   *
-   * 为什么不复用「成功绿」：金额是**中性计量**，不是状态。用绿色会让人以为
-   * 「花得多 = 好」，而这里只是把 ¥ 与旁边的 token 数在视觉上分开。
-   * 选一个在浅色/深色主题下都有足够对比度的琥珀色作为主色。
-   */
+  /* Money gets its own colour because it is a neutral quantity, not a status: a success green
+     would read as "spending more is good". The amber stays legible in both themes and separates
+     ¥ from the token counts next to it. */
   --tlogs-money: var(--dsw-alias-state-warn-primary, #c2740a);
   --tlogs-radius: var(--dsw-radius-xs, 4px);
   --tlogs-gap: 6px;
 
-  /*
-   * 图表配色。
-   *
-   * 前三个是堆叠柱的三段（输入·缓存命中 / 输入·缓存未命中 / 输出）；后三个是饼图的
-   * 备用色。刻意选在浅色与深色主题下都能分辨的中间明度，且不依赖宿主的语义 token
-   * （它们没有「图表色板」这一类）。
-   */
+  /* Chart palette: c1–c3 are the three stacked segments (cache hit / cache miss / output), c4–c6
+     are spare donut slices. The host has no chart-specific tokens, so these are fixed
+     mid-luminance colours that stay distinguishable in both themes. */
   --tlogs-c1: var(--dsw-alias-state-business-primary, #4d6bfe);
   --tlogs-c2: #7c5cff;
   --tlogs-c3: #f0a020;
@@ -78,12 +53,11 @@ export const CSS = `
 .tlogs *, .tlogs *::before, .tlogs *::after { box-sizing: border-box; }
 .tlogs button, .tlogs input { font-family: inherit; }
 
-/* ---------- 形态 A：紧凑条（28–32px） ---------- */
 .tlogs-compact {
   display: flex;
   align-items: center;
   gap: var(--tlogs-gap);
-  /* 原来是写死的 height: 30px —— 指标换行时第二行会被裁掉，故改成 min-height。 */
+  /* min-height, not height: a wrapped second metric row would be clipped. */
   min-height: 30px;
   padding: 3px 6px;
   width: 100%;
@@ -94,7 +68,6 @@ export const CSS = `
 }
 .tlogs-compact:hover { background: var(--tlogs-hover); }
 
-/* 收起态（图标栏）：只显示总计数字。原先这里放一个求和符号徽标，已按要求删除。 */
 .tlogs-collapsed-value {
   flex: 1 1 auto;
   min-width: 0;
@@ -110,25 +83,12 @@ export const CSS = `
 }
 .tlogs-collapsed .tlogs-compact { justify-content: center; padding: 0 2px; }
 
-/*
- * 布局要点：**数字优先，标签也不许被压没**。
- *
- * 历史：.tlogs-metric 里的标签和数字都可压缩、容器又是 overflow: hidden，
- * 空间一紧就把整行末尾（含数字）裁掉 —— 实测最后一项显示成「本月 359」
- * 而不是完整的「359M」。于是改成数字 flex: 0 0 auto。
- *
- * 但那只是把牺牲转嫁给了标签：标签 flex: 0 1 auto + 省略号，在 313px 侧边栏、
- * 四个指标时**标签全部被压没**，紧凑条只剩「8.9B · ¥678.87 · ↖561M · ⚡2.4K」。
- *
- * 现在的规则：**数字与标签都不可收缩**（flex: 0 0 auto），指标行整体换行
- * （flex-wrap: wrap）。宁可紧凑条多占一行，也不留一个认不出的碎片。
- * 另外默认不再把金额放进紧凑条（见 src/config.ts 的 compactMetrics 默认值）。
- */
+/* Numbers and labels are both non-shrinkable (flex: 0 0 auto) and the row wraps: every other
+   split either clipped the trailing number or squeezed the labels into unreadable fragments. */
 .tlogs-metrics {
   display: flex;
   align-items: center;
-  /* 指标少的时候，把空余宽度摊到指标之间，而不是全堆在右侧变成一片空白。
-     column-gap 只是**下限**；实际间距由 .tlogs-metric 的 flex-grow 均分。 */
+  /* column-gap is a lower bound: each .tlogs-metric also grows, so spare width is spread between metrics rather than piling up on the right. */
   column-gap: 12px;
   row-gap: 2px;
   min-width: 0;
@@ -140,16 +100,14 @@ export const CSS = `
   align-items: baseline;
   gap: 3px;
   min-width: 0;
-  /* 仍然不可收缩（gap/换行保证内容不被压碎），但允许**伸展**：
-     三个指标各分到一份等量空余宽度，于是「总 / 今日 / 请求」的间距随
-     侧边栏变宽而自动变大，右侧不再空一大块。指标多到几乎填满一行时，
-     可分配空余趋近 0，自动退化回上面的 12px 下限。 */
+  /* Still non-shrinkable but allowed to grow: each metric takes an equal share of the spare width,
+     so the gaps widen with the sidebar; with many metrics this falls back to the 12px lower bound. */
   flex: 1 0 auto;
 }
 .tlogs-metric-label {
   color: var(--tlogs-muted);
   font-size: 10px;
-  /* 不参与收缩：宁可整项换行，也不要把「今日」「请求」压成认不出的碎片。 */
+  /* Never shrinks: wrapping the whole metric beats a chopped-off label. */
   flex: 0 0 auto;
   white-space: nowrap;
 }
@@ -159,12 +117,11 @@ export const CSS = `
   font-weight: 600;
   letter-spacing: -0.01em;
 }
-/* 紧凑条上的金额：与 token 数字同字号，但用金额色区分，并保留 ¥ 符号。 */
+/* Money on the bar: same size as the token counts, told apart by colour, ¥ kept. */
 .tlogs-metric-money { color: var(--tlogs-money); }
 
-/* 口径徽标：只在数字不是纯平台口径时出现。
-   「本机」= 本机会话日志口径（实时、含平台看不到的供应商）；
-   「合并」= 平台 + 本机合并；「¥结算中」= 金额那一栏平台还没结算完。 */
+/* Scope badge next to a number. The text comes from the caller: a platform tag
+   (official / third party) in the tables, the third-party label on a card. */
 .tlogs-src {
   flex: 0 0 auto;
   margin-left: 4px;
@@ -178,18 +135,13 @@ export const CSS = `
   white-space: nowrap;
 }
 .tlogs-src-pending { color: var(--tlogs-warn); border-color: var(--tlogs-warn); }
-/* 注：曾有一条「¥结算中」徽标（.tlogs-src-pending）。平台当天结算滞后是**常态**
-   （约 10~30 分钟），那个徽标几乎永久常亮，只剩噪声 —— 已从卡面移除，
-   结算滞后只在卡片的 tooltip 里说明。这条样式保留给将来真正的告警态复用。 */
-/* 表格里行内使用的「官方 / 第三方」徽标：跟在名称前面，去掉左侧外边距。 */
+/* Kept for a real alert state; the daily settlement lag (10–30 min) is normal, so a
+   permanently lit "settling" badge would only be noise. */
 .tlogs-src-inline { margin: 0 4px 0 0; vertical-align: middle; display: inline-block; }
-/* 注：原先这里还有一条 .tlogs-sep（指标之间的「·」分隔符）。指标行现在允许
-   换行，分隔符会孤零零留在行首，因此已从 compact-bar.tsx 里移除。 */
 
 .tlogs-actions { display: inline-flex; align-items: center; gap: 2px; flex: 0 0 auto; }
 
-/* 展开/收起按钮：必须是**看得见**的按钮。
-   此前它是 10px、无边框、用 tertiary 灰的项目符号，在页脚底色上几乎不可辨认。 */
+/* Deliberately visible: the footer row needs a button one can actually see and hit. */
 .tlogs-iconbtn {
   appearance: none;
   display: inline-flex;
@@ -220,13 +172,13 @@ export const CSS = `
   border-color: var(--tlogs-border-strong);
   background: var(--tlogs-card-bg);
 }
-/* 收起态（图标栏）空间不足：隐藏手动刷新，只留展开/收起。 */
+/* Too little room in the collapsed rail: hide manual refresh, keep expand/collapse. */
 .tlogs-collapsed .tlogs-refresh { display: none; }
 
-/* 数据可能过期角标（需求 5.4） */
+/* Stale-data badge: the last refresh failed and the numbers are cached. */
 .tlogs-stale { flex: 0 0 auto; font-size: 10px; color: var(--tlogs-warn); cursor: help; }
 
-/* 首次全量拉取进度 */
+/* Progress of the first full fetch. */
 .tlogs-progress {
   display: block;
   height: 2px;
@@ -242,14 +194,9 @@ export const CSS = `
   transition: width 200ms ease-out;
 }
 
-/* ---------- 形态 B：展开面板（就地撑开） ---------- */
-/*
- * 高度上限刻意放宽。
- *
- * 原来是写死的 300px：五张卡片在双列布局下需要约 370px，于是第五张（当月消耗）
- * 被截断、必须滚动才能看到——实测截图确认。现在改用视口相关的上限，常规窗口下
- * 五张卡片可以一次看全；overflow-y: auto 只作为极小窗口的最后兜底。
- */
+/* Expanded panel — opens in place and pushes the content above it up. */
+/* The cap is viewport-relative: the five cards need roughly 370px in two columns, so a fixed cap
+   cut the last one off and forced scrolling; overflow-y is only the fallback for very short windows. */
 .tlogs-panel {
   display: flex;
   flex-direction: column;
@@ -290,15 +237,12 @@ export const CSS = `
 .tlogs-cards { display: grid; grid-template-columns: 1fr; gap: 5px; }
 .tlogs-w-full .tlogs-cards { grid-template-columns: 1fr 1fr; }
 /*
- * 总消耗是主指标：**始终占满一整行**（与网格同宽），其余卡片两两成行。
- *
- * buildCards() 保证「总消耗 Token」永远是第一张卡片，所以用 :first-child 即可。
- * 早前这里是「最后一张在奇数位时横跨两列」，那是为了让落单的当月消耗不至于半行——
- * 现在主指标占了整行，剩余四张正好两两成行，那条规则反而会挤出空位，故移除。
+ * Total consumption is the headline metric and always spans the full row; the other four pair up.
+ * buildCards() on the host guarantees it is first, hence :first-child.
  */
 .tlogs-w-full .tlogs-cards > :first-child { grid-column: 1 / -1; }
 
-/* 卡片排版压紧：五张卡片要能一次看全，不能靠滚动。 */
+/* Tight cards: all five have to fit at once, without scrolling. */
 .tlogs-card {
   display: flex;
   flex-direction: column;
@@ -318,7 +262,7 @@ export const CSS = `
   justify-content: space-between;
   gap: 6px;
   min-width: 0;
-  /* 允许换行：徽标宁可另起一行，也不要把标题压成「今…」「当…」（实测踩过）。 */
+  /* Badges wrap to their own line rather than squeezing the title. */
   flex-wrap: wrap;
 }
 .tlogs-card-title {
@@ -340,16 +284,8 @@ export const CSS = `
 }
 .tlogs-card-total.is-error { font-size: 11px; font-weight: 400; color: var(--tlogs-muted); }
 /*
- * 三项拆分固定成 **3 列网格**，标签在上、数值在下。
- *
- * 原来是 flex + flex-wrap：双列布局下每张卡片只有约 145px（内容约 131px），
- * 三组「标签 + 数值」一行放不下，于是每张卡片换行位置各不相同 ——
- * 「今日消耗」显示成「输入 559M 输出 1.7M / 请求 2.4K」，
- * 而「当前项目消耗」挤在一行，两张卡片高度还不一样，看上去就是一团。
- *
- * 固定 3 列后每列约 (131 - 2×6) / 3 ≈ 40px：标签（2 字 @9px ≈ 18px）
- * 与数值（@10.5px，最长 5 字符 ≈ 30px）都能完整放下，
- * 五张卡片高度天然一致，也不再出现半行。
+ * Fixed 3-column grid, label above value: as flex-wrap the pairs broke at different points per
+ * card (about 145px wide in two-column mode), so rows did not line up and card heights differed.
  */
 .tlogs-card-split {
   display: grid;
@@ -380,9 +316,8 @@ export const CSS = `
   text-overflow: ellipsis;
 }
 
-/* 卡片的主数字行：左侧 token 总量，右侧金额。
-   用 flex + 基线对齐，并让金额 flex: 0 0 auto（永不压缩）——
-   侧边栏很窄，一旦金额被压缩就会退化成「¥1…」，那比不显示更糟。 */
+/* Main number row: token total left, money right. The money never shrinks — squeezed into
+   "¥1…" it is worse than not showing it at all. */
 .tlogs-card-line {
   display: flex;
   align-items: baseline;
@@ -400,7 +335,6 @@ export const CSS = `
   white-space: nowrap;
 }
 
-/* 平台账户概览（余额 / 官方累计消费）。 */
 .tlogs-account {
   display: flex;
   flex-wrap: wrap;
@@ -449,7 +383,6 @@ export const CSS = `
 }
 .tlogs-input:focus-visible { outline: 2px solid var(--tlogs-accent); outline-offset: 0; }
 
-/* ---------- 详细视图（同一容器内切换） ---------- */
 .tlogs-detail { display: flex; flex-direction: column; gap: 8px; width: 100%; }
 .tlogs-detail-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 .tlogs-tabs { display: flex; flex-wrap: wrap; gap: 3px; }
@@ -467,14 +400,8 @@ export const CSS = `
 
 .tlogs-table { width: 100%; border-collapse: collapse; font-size: 10px; }
 .tlogs-table th, .tlogs-table td { padding: 3px 4px; text-align: right; white-space: nowrap; }
-/*
- * 名称列：**不截断**。
- *
- * 原来是 max-width: 9em + ellipsis，实测把模型名切成了
- * deepseek-v4.1-flash-expires-on-0… / deepseek-chat & deepseek-reaso…，
- * 用户直接反馈「名字显示不全」。这里改成允许换行（overflow-wrap: anywhere 处理
- * 「provider · model」这种长串），并给它一个下限，让数字列先让位。
- */
+/* The name column must not be truncated: real "provider · model" strings do not fit in 9em, so it
+   wraps (overflow-wrap: anywhere) and sets a floor that makes the numeric columns yield. */
 .tlogs-table th:first-child, .tlogs-table td:first-child {
   text-align: left;
   white-space: normal;
@@ -498,20 +425,15 @@ export const CSS = `
   font-variant-numeric: tabular-nums;
   border-bottom: 1px solid var(--tlogs-border);
 }
-/* 金额列：用金额色与旁边四个整数列区分开（它们是 token / 次数，不是钱）。 */
+/* Money column: the colour separates it from the token and request counts beside it. */
 .tlogs-table td.tlogs-td-money { color: var(--tlogs-money); font-weight: 600; }
 .tlogs-empty { padding: 10px 4px; text-align: center; color: var(--tlogs-muted); font-size: 11px; }
 .tlogs-scroll { max-height: 190px; overflow-y: auto; overscroll-behavior: contain; }
 .tlogs-error { color: var(--tlogs-danger); font-size: 10px; line-height: 1.5; }
-/* 说明性提示（例如「内置登录不可用，请手动填写」）。 */
 .tlogs-hint { color: var(--tlogs-muted); font-size: 10px; line-height: 1.55; }
 
-/* ---------- 详细数据弹窗（浮层） ---------- */
-/*
- * 这是全文件唯一使用 position: fixed 的地方。
- * 紧凑条与展开面板仍然严格留在文档流内（需求 1.1）—— 那一条针对的是侧边栏页脚里的
- * 内嵌组件；弹窗本质上就该是浮层，否则在窄侧边栏里放不下日历与表格。
- */
+/* Detail modal — the only place in this file that uses position: fixed. A modal is a layer
+   by nature, and the calendar plus the tables never fit in the narrow sidebar. */
 .tlogs-modal-mask {
   position: fixed;
   inset: 0;
@@ -522,24 +444,14 @@ export const CSS = `
   padding: 24px;
   background: color-mix(in srgb, #000 45%, transparent);
 }
-/*
- * 弹窗尺寸**永远锁定**：宽高都写死（仅随视口收缩），切任何页签都不变。
- *
- * 历史（两次反馈的结论）：
- *  1. 早先是 max-height: 82vh 加 body 的 min-height，高度由内容决定 → 切页签伸缩。
- *     用户明确要求「无论切换到哪个标签，弹窗尺寸永远锁定」，于是写死宽高。
- *  2. 写死之后日历页签（默认页签、内容最短）下方空出一条（用户标注「红线下方那截不要」）。
- *     **但解法不是把弹窗改成贴内容** —— 那会推翻 1。正确解法是让**内容去长满**这块
- *     高度：日历网格的行高改成 minmax(52px, 1fr) 并 flex 伸展（见下），
- *     表格/图表这类超长内容在 body 内滚动。
- *
- * 一句话：弹窗外框恒定，缺的高度由日历自己填满。
- */
+/* The frame is locked: width and height are fixed (shrinking only with the viewport), so switching
+   tabs never resizes the dialog and nothing inside may be sized by its content — the calendar grid
+   fills the leftover height and long tables or charts scroll inside .tlogs-modal-body. */
 .tlogs-modal {
   display: flex;
   flex-direction: column;
   width: min(880px, 94vw);
-  /* 锁定尺寸；上限随视口收缩（短视口下也不会顶出屏幕）。 */
+  /* Locked size; the caps shrink with the viewport so it never leaves a short screen. */
   height: min(640px, 78vh);
   overflow: hidden;
   border: 1px solid var(--tlogs-border-strong);
@@ -565,7 +477,7 @@ export const CSS = `
   flex-direction: column;
   gap: 10px;
   padding: 10px 12px 12px;
-  /* 把剩余高度全部吃掉并在内部滚动：body 的高度不再由内容决定。 */
+  /* Takes all remaining height and scrolls internally, so content never sizes the body. */
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
@@ -573,7 +485,6 @@ export const CSS = `
 }
 .tlogs-table-wrap { max-height: 52vh; overflow-y: auto; overscroll-behavior: contain; }
 
-/* ---------- 日历 ---------- */
 .tlogs-cal-nav { display: flex; align-items: center; gap: 6px; }
 .tlogs-cal-select { flex: 1 1 auto; }
 .tlogs-cal-summary,
@@ -590,27 +501,21 @@ export const CSS = `
 .tlogs-cal-summary-title { color: var(--tlogs-muted); font-weight: 600; }
 .tlogs-cal-detail { min-height: 30px; }
 /*
- * 行高下限 52px，上限不限（1fr）：弹窗高度是**锁定**的，日历必须自己长满
- * 这块高度，否则锁定高度就会在日历下方变成一条空白 —— 这是「尺寸永远锁定」
- * 与「日历下方不留空白」两条要求的唯一交点。
- *
- * 行高下限仍然 52 而不是 40：每格现在是三行（日号 / token / 金额）。金额那一行
- * **无条件**占位（无数据时渲染空串），所以有金额与没金额的格子高度仍完全相同 ——
- * 一旦按需渲染，切月时高度又会跳，那正是「固定 42 格」要解决的问题。
+ * Row height: 52px floor, unbounded ceiling (1fr), so the grid fills the height the locked dialog
+ * would otherwise leave blank under the calendar. Each cell is three rows (day / tokens / money)
+ * and the money row renders unconditionally, empty when there is no data — on demand the height
+ * would jump when switching months, which is what the fixed 42 cells exist to prevent.
  */
 .tlogs-cal {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
-  /*
-   * 第一行是星期标题（保持紧凑，不参与分摊），其余 6 行是日期格：
-   * 用 minmax(52px, 1fr) 把「锁定高度多出来的部分」按比例摊给它们。
-   * 日历**始终渲染 42 格**（见 detail-modal.tsx），所以正好 1 + 6 行。
-   */
+  /* Row 1 is the weekday header (auto), the other 6 are the date cells: minmax(52px, 1fr) spreads
+     the leftover height over them. The calendar always renders 42 cells (see detail-modal.tsx). */
   grid-template-rows: auto repeat(6, minmax(52px, 1fr));
-  /* 兜底：万一将来某个月不是 6 行，隐式行也要同样的下限语义。 */
+  /* Implicit rows get the same floor, in case a month ever needs more than 6 rows. */
   grid-auto-rows: minmax(52px, 1fr);
   gap: 3px;
-  /* body 是 flex 列：让网格吃掉剩余高度，否则锁定高度会变成日历下方的空白条。 */
+  /* The body is a flex column: the grid has to absorb the leftover height. */
   flex: 1 1 auto;
   min-height: 0;
 }
@@ -637,7 +542,7 @@ export const CSS = `
 .tlogs-cal-cell.is-selected { border-color: var(--tlogs-accent); }
 .tlogs-cal-day { font-size: 10px; color: var(--tlogs-muted); }
 .tlogs-cal-val { font-size: 9.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
-/* 金额行：即使没有金额也保留这一行（min-height 占位），保证每格行数恒定。 */
+/* Money line, kept even when empty so every cell stays three rows tall. */
 .tlogs-cal-money {
   min-height: 11px;
   font-size: 9px;
@@ -647,24 +552,18 @@ export const CSS = `
   white-space: nowrap;
 }
 
-/* ---------- 图表（详细数据弹窗的「图表」页签） ---------- */
-/*
- * 全部是内联 SVG，几何换算在 chart-utils.ts（有单测）。这里只管颜色与排版：
- * 柱/线的填充一律走 --tlogs-cN，因此浅色与深色主题自动跟随。
- *
- * 关于高度：每张图的高度由 viewBox 决定、宽度 100% 等比缩放，所以切换范围/粒度
- * 时卡片高度不会跳（点数变化只影响柱宽与标签密度）。
- */
+/* Charts (the modal's chart tab) — inline SVG only. Geometry lives in chart-utils.ts; this file
+   only sets colour and layout, and every fill goes through --tlogs-cN so both themes follow. Each
+   chart's height comes from its viewBox and the width scales to 100%, so no card jump on switch. */
 .tlogs-chart-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
 .tlogs-ctl-group { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
 .tlogs-ctl-label { font-size: 10px; color: var(--tlogs-muted); white-space: nowrap; }
 .tlogs-chart-select { flex: 0 1 auto; min-width: 118px; max-width: 220px; }
 .tlogs-chart-date { flex: 0 1 auto; min-width: 132px; }
 
-/*
- * 图形子标签行：紧贴主页签下面，右侧留出「构成维度」的位置。
- * 行本身用固定高度，这样切子标签（或让右侧按钮出现/消失）不会挪动下面的内容。
- */
+/* Sub-tab row directly under the main tabs; the right side holds the composition dimension. The row
+   keeps a fixed height so switching sub-tabs (or showing/hiding those buttons) does not shift the
+   content below. */
 .tlogs-subtabs {
   display: flex;
   align-items: center;
@@ -674,13 +573,8 @@ export const CSS = `
   flex: 0 0 auto;
 }
 
-/*
- * 图形舞台：**固定最小高度**。
- *
- * 三张图的高度天然不同（折线 220、堆叠柱 236、环形 170）。给舞台一个统一的下界，
- * 再让卡片撑满，切子标签时下方内容不会上下跳 —— 加上弹窗外框本身固定，
- * 整体就是「怎么点都不动」。
- */
+/* Fixed minimum height for the stage: the three charts are 220 / 236 / 170 tall, so a shared floor
+   plus a card that fills it keeps the content below still when switching sub-tabs. */
 .tlogs-chart-stage {
   display: flex;
   flex-direction: column;
@@ -733,7 +627,7 @@ export const CSS = `
 .tlogs-guide { stroke: var(--tlogs-border-strong); stroke-width: 1; stroke-dasharray: 3 3; }
 .tlogs-hit { fill: transparent; }
 .tlogs-chart-svg .tlogs-hit { cursor: crosshair; }
-/* 柱子整体在悬停时提亮，命中区由上面的透明矩形承担。 */
+/* The bar brightens on hover; hit testing belongs to the transparent rects. */
 .tlogs-bar { transition: opacity 120ms ease; }
 .tlogs-bar:hover { opacity: 0.82; }
 
@@ -805,11 +699,7 @@ export const CSS = `
 .tlogs-legend-value { font-weight: 600; font-variant-numeric: tabular-nums; }
 .tlogs-legend-pct { width: 46px; text-align: right; color: var(--tlogs-muted); font-variant-numeric: tabular-nums; }
 
-/* ---------- 设置页签（语言） ---------- */
-/*
- * 定宽内容块：弹窗很宽，语言选项铺满整行会显得空。
- * 页面上只有标题 + 三个选项（说明性文字按用户要求删掉了），选中态用强调色描边。
- */
+/* Settings tab (language). The block is capped in width: the dialog is far wider than a heading plus three radio options need. */
 .tlogs-settings { display: flex; flex-direction: column; gap: 10px; max-width: 520px; }
 .tlogs-settings-title { font-size: 13px; font-weight: 600; }
 .tlogs-settings-options { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -832,11 +722,9 @@ export const CSS = `
 `
 
 /**
- * 注入样式表，返回卸载函数。
- *
- * 与官方 `ui-theme` 的 installThemeStyles 保持同一约定：
- * 打上 `data-plugin` / `data-plugin-css` 标记，卸载时移除节点，
- * 满足需求 7.5「插件卸载后不残留 DOM 节点」。
+ * Inject the stylesheet and return the uninstall function. Same convention as the official ui-theme
+ * `installThemeStyles`: tag the node with data-plugin / data-plugin-css and remove it on uninstall,
+ * so the plugin leaves no DOM behind.
  */
 export function installStyles(doc: Document = document): () => void {
   const existing = doc.getElementById(STYLE_ID)

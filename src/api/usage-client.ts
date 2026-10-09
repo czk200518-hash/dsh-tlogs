@@ -1,14 +1,11 @@
 /**
- * tlogs — DeepSeek 开放平台用量接口客户端。
+ * tlogs — DeepSeek 开放平台用量接口客户端。负责构造请求（URL / 请求头）与逐层校验响应，把归一化后的
+ * `biz_data` 交给 `parser.ts`。三个端点共用同一套错误语义与凭据投递策略。
  *
- * 本文件是工作区权威参考实现 `deepseek_python_20261007_a1f087.py` 中
- * `fetch_month`（py:61-88）与 `HEADERS`（py:34-46）的逐行翻译。
- *
- * 已实测确认的事实（本文件不得擅自偏离）：
- *  - 唯一可用端点：`GET /api/v0/usage/amount?year=YYYY&month=MM`
- *  - `/usage/by_api_key/amount` 不可用（实测 HTTP 422 `{"detail":[{"loc":"query.end"}]}`）
- *  - `start_time` / `end_time` 会 422，因此只能按自然月拉取
- *  - 必须携带 Origin / Referer / x-client-platform，否则被 WAF 拦截或返回空数据
+ * 接口侧的硬约束（都由 WAF 与签名策略决定，不能改）：
+ *  - 唯一可用端点：`GET /api/v0/usage/amount?year=YYYY&month=MM`；`/usage/by_api_key/amount` 会 422，
+ *    `start_time` / `end_time` 同样 422，所以只能按自然月拉取；
+ *  - 必须带 Origin / Referer / x-client-platform，否则被 WAF 拦截或返回空数据；令牌一律不出本文件：错误文本先抹令牌再单行化。
  */
 
 import { unwrapBizData } from './parser.js'
@@ -21,24 +18,21 @@ import type {
   UsageErrorKind,
 } from '../types.js'
 
-export const BASE_URL = 'https://platform.deepseek.com/api/v0' // py:32
-export const USAGE_PATH = '/usage/amount' // py:63
+export const BASE_URL = 'https://platform.deepseek.com/api/v0'
+export const USAGE_PATH = '/usage/amount'
 /**
- * 金额接口。与 `USAGE_PATH` 是**孪生**关系：入参相同（year/month），返回结构同构
- * （`total[]` + `days[]`），只是 `amount` 字段的含义从 token 数变成 CNY 金额。
- *
- * 实测差异：`/usage/amount` 的 `biz_data` 是**对象**，`/usage/cost` 的是
- * **长度 1 的数组**（多一个 `currency: "CNY"`）。已由 `unwrapBizData` 抹平。
+ * 金额接口。与 `USAGE_PATH` 入参相同（year/month）、返回结构同构（`total[]` + `days[]`），
+ * 只是 `amount` 的含义从 token 数变成 CNY 金额。
  */
 export const COST_PATH = '/usage/cost'
 /** 账户概览（余额 / 赠送余额 / 官方累计消费）。 */
 export const ACCOUNT_SUMMARY_PATH = '/users/get_user_summary'
 
-/** 单次请求超时，对应 Python `requests.get(..., timeout=30)`（py:67）。 */
+/** 单次请求超时。 */
 export const DEFAULT_TIMEOUT_MS = 30_000
 
-/** 渲染 Python 的 `None`，让错误文案与脚本输出逐字一致。 */
-function pyStr(v: unknown): string {
+/** 与 Python 的 `str(None)` 对齐，让错误文案里的空值写作 `None`。 */
+function toText(v: unknown): string {
   if (v === null || v === undefined) return 'None'
   if (typeof v === 'string') return v
   return String(v)
@@ -49,45 +43,33 @@ function isDict(v: unknown): v is Record<string, unknown> {
 }
 
 /**
- * 把任何文本压成**单行**安全文本：去掉控制字符、折叠空白、截断。
- *
- * 为什么必须做：这些文本会进入日志、快照 `error` 与界面。实测发现
- * `fetch` 在请求头非法时抛出的错误消息**会把头的值原样回显**，而平台响应体
- * 也可能含换行 —— 直接透传会造成日志注入（伪造多行日志）与敏感值回显。
+ * 把任何文本压成单行安全文本：去掉控制字符、折叠空白、截断。必须做：这些文本会进入日志、快照 `error`
+ * 与界面，而 `fetch` 在请求头非法时抛出的消息会把头的值原样回显，平台响应体也可能含换行 ——
+ * 直接透传等于日志注入（伪造多行日志）加敏感值回显。
  */
-function oneLine(s: string, max = 200): string {
+function singleLine(s: string, max = 200): string {
   return s.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max)
 }
 
 /**
- * 从任意文本里抹掉令牌本体。
- *
- * 单行化只解决「换行污染日志」，不解决「令牌被回显」：`fetch` 在请求头非法时
- * 抛出的消息形如 `Headers.append: "Bearer <token>" is an invalid header value.`，
- * 头值是**原样**带出来的。既然我们手里就有这个令牌，最可靠的做法就是把它替换掉，
- * 而不是指望上游不回显。
+ * 从文本里抹掉令牌本体。单行化只解决换行污染日志，不解决令牌回显：`fetch` 抛出的消息形如
+ * `Headers.append: "Bearer <token>" is an invalid header value.`，头值是原样带出来的；
+ * 既然我们手里就有这个令牌，直接替换比指望上游不回显可靠。
  */
 function scrubToken(s: string, token: string): string {
   if (!token) return s
   return s.split(token).join('<redacted>')
 }
 
-/** 组装一条既可读又不含令牌、且必然单行的错误文本。 */
+/** 组装一条可读、不含令牌、且必然单行的错误文本。 */
 function safeMsg(raw: string, token: string, max = 200): string {
-  // 顺序很重要：**先抹令牌再单行化**。反过来的话换行会先被换成空格，
-  // 原始的令牌字符串就匹配不上了（这个坑被测试抓到过）。
-  return oneLine(scrubToken(raw, token), max)
+  // 先抹令牌再单行化。反过来的话换行会先被换成空格，令牌字符串就匹配不上了。
+  return singleLine(scrubToken(raw, token), max)
 }
 
 /**
- * 构造请求头。等价于 Python 的 `HEADERS`（py:34-46），另加凭据投递方式。
- *
- * @param extraHeaders 额外的部署请求头（例如 `deepseekAccount.getPlatformSession()`
- *   返回的 `requestHeaders`）。它们**覆盖**同名基础头（凭据头除外），因为那些是
- *   签发方要求的环境头，必须原样带上。
- * @param scheme 凭据投递方式，见 `CredentialScheme`。默认 `bearer`。
- *
- * 安全约束：令牌只在内存里拼进凭据头，绝不写入日志或源码。
+ * 构造请求头。extraHeaders 是签发方要求的环境头（`getPlatformSession()` 返回的 `requestHeaders`），
+ * 可以覆盖同名基础头，但凭据头与来源伪造类头一律不覆盖。令牌只在内存里拼进凭据头，不写日志。
  */
 export function buildHeaders(
   token: string,
@@ -106,12 +88,10 @@ export function buildHeaders(
       'Chrome/120.0.0.0 Safari/537.36',
   }
 
-  // 由本插件独占的头，部署头一律不得覆盖。
+  // 由本插件独占的头，部署头不得覆盖。
   const protectedHeaders = new Set(['authorization', 'x-dsh-auth-token', 'host'])
 
-  /**
-   * 即便带 `x-` 前缀也要拒绝的头：来源伪造类（可用于绕过平台侧限流）。
-   */
+  /** 带 `x-` 前缀也要拒绝：来源伪造类，可用来绕过平台侧限流。 */
   const deniedExtraHeaders = new Set([
     'x-forwarded-for',
     'x-forwarded-host',
@@ -124,18 +104,9 @@ export function buildHeaders(
   else headers.Authorization = `Bearer ${token}`
 
   if (extraHeaders) {
-    // **白名单**：只接受 `x-` 前缀的扩展头。
-    //
-    // 为什么要这么严：`extraHeaders` 来自 `getPlatformSession().requestHeaders`，
-    // 它面向的是「嵌入式 Platform 文档」，不是用量接口；账号包的契约本身也写明
-    // 「provider 拥有全部五个 Platform 客户端头，**部署配置无法覆盖**」。让部署头
-    // 盖掉我们写死的 Origin / Referer，既与该契约的意图相反，也会破坏我们赖以
-    // 免遭 WAF 拦截的伪装（见本文件顶部注释）。
-    //
-    // 实测（本机回显服务器）：若不做白名单，`Cookie` / `Origin` / `Referer` /
-    // `x-forwarded-for` 都会**原样到达服务器**（`Host` 会被运行时静默丢弃）。
-    // 其中 `Cookie` 会带上不属于本插件的会话、`Origin`/`Referer` 会换掉伪装。
-    // 白名单一次性排除全部这些，且不需要枚举黑名单。
+    // 只接受 `x-` 前缀的扩展头。extraHeaders 面向的是嵌入式 Platform 文档，不是用量接口；放它盖掉
+    // 写死的 Origin / Referer 会破坏免遭 WAF 拦截的伪装，而 Cookie / x-forwarded-* 这类头又会原样到达
+    // 服务器（Host 会被运行时丢弃）。白名单一次排除全部这些，且不必枚举黑名单。
     const existingKey = new Map(Object.keys(headers).map((k) => [k.toLowerCase(), k]))
     for (const [k, v] of Object.entries(extraHeaders)) {
       if (k.length === 0 || typeof v !== 'string') continue
@@ -150,7 +121,6 @@ export function buildHeaders(
   return headers
 }
 
-/** 构造请求 URL，等价于 `f"{BASE_URL}/usage/amount"` + `params={"year","month"}`。 */
 export function buildUrl(year: number, month: number, kind: UsageKind = 'amount'): string {
   const path = kind === 'cost' ? COST_PATH : USAGE_PATH
   return `${BASE_URL}${path}?year=${encodeURIComponent(String(year))}&month=${encodeURIComponent(String(month))}`
@@ -159,7 +129,6 @@ export function buildUrl(year: number, month: number, kind: UsageKind = 'amount'
 /** 走哪个月度接口：token 用量还是金额。 */
 export type UsageKind = 'amount' | 'cost'
 
-/** 构造结构化错误。 */
 function err(kind: UsageErrorKind, message: string, status?: number): { ok: false; error: UsageError } {
   return { ok: false, error: status === undefined ? { kind, message } : { kind, message, status } }
 }
@@ -172,7 +141,6 @@ export interface FetchMonthOptions {
   kind?: UsageKind
   /** 外部取消信号（DSH 工具调用会传入）。 */
   signal?: AbortSignal
-  /** 便于测试替换的 fetch 实现。 */
   fetchImpl?: typeof fetch
   timeoutMs?: number
   /** 签发方要求的额外请求头（见 buildHeaders）。 */
@@ -181,7 +149,6 @@ export interface FetchMonthOptions {
   scheme?: CredentialScheme
 }
 
-/** 平台请求的公共选项。 */
 interface PlatformOptions {
   token: string
   signal?: AbortSignal
@@ -191,10 +158,8 @@ interface PlatformOptions {
   scheme?: CredentialScheme
 }
 
-/** 合并外部取消信号与超时信号。 */
+/** 合并外部取消信号与超时信号，保证取消与超时都能真正中断请求。 */
 function mergeSignals(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal | undefined {
-  // Python 用 requests 的 timeout；fetch 侧用 AbortSignal.timeout 等价表达，
-  // 并与外部 signal 合并，保证取消与超时都能真正中断请求。
   const signals: AbortSignal[] = []
   if (signal) signals.push(signal)
   if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
@@ -206,11 +171,9 @@ function mergeSignals(signal: AbortSignal | undefined, timeoutMs: number): Abort
 }
 
 /**
- * 平台请求公共层：发出请求、逐层校验 `code` / `biz_code`，成功后把归一化过的
- * `biz_data` 交给调用方解析。
- *
- * 抽出来的原因：金额接口（`/usage/cost`）与账户概览（`/users/get_user_summary`）
- * 的错误语义、重定向策略、防令牌回显处理与用量接口**完全一致**，复制一份必然漂移。
+ * 平台请求公共层：发出请求、逐层校验 `code` / `biz_code`，成功后把归一化过的 `biz_data` 交给调用方解析。
+ * `label` 只出现在错误文案里，用于指明是哪个接口。金额接口与账户概览的错误语义、重定向策略、防令牌回显
+ * 处理与用量接口完全一致，所以三者共用这一层。
  */
 async function platformBizData(
   opts: PlatformOptions,
@@ -224,20 +187,12 @@ async function platformBizData(
 
   let resp: Response
   try {
-    // py:67 —— Python 捕获 requests.exceptions.RequestException
     resp = await doFetch(url, {
       headers: buildHeaders(token, opts.extraHeaders, opts.scheme),
       signal,
-      // 安全（实测确认，2026-10）：**绝不跟随重定向**。
-      //
-      // 运行时在跨域重定向时会剥掉标准凭据头（`Authorization` / `Cookie`），
-      // 但**不会剥掉自定义头**。实测：302 到另一个源后，
-      //   - `Authorization: Bearer <t>` → 目标服务器收不到 ✅
-      //   - `x-dsh-auth-token: <t>`     → 目标服务器原样收到 🚨
-      //
-      // 方案 D 用的正是后者，所以必须自己把重定向掐断。用量接口不需要重定向，
-      // `manual` 会把 3xx 当成非 200 报错（见下），凭据因而永远不会离开
-      // platform.deepseek.com。
+      // 绝不跟随重定向：运行时在跨域重定向时会剥掉 `Authorization` / `Cookie` 这类标准头，却不会剥掉
+      // 自定义头，而账号会话凭据用的正是自定义头 `x-dsh-auth-token`。掐断重定向，凭据就不会离开
+      // platform.deepseek.com；`manual` 下 3xx 按非 200 处理（见下）。
       redirect: 'manual',
     })
   } catch (e) {
@@ -246,15 +201,14 @@ async function platformBizData(
     return err('network', `请求异常：${safeMsg(e instanceof Error ? e.message : String(e), token)}`)
   }
 
-  if (resp.status === 401) return err('unauthorized', '401 认证失败（userToken 失效）', 401) // py:71-72
+  if (resp.status === 401) return err('unauthorized', '401 认证失败（userToken 失效）', 401)
   if (resp.status !== 200) {
-    // 3xx：我们主动不跟随。只说目标 origin，不把整条 Location 回显出去
-    // （它是外部输入，没必要原样带进日志/UI）。
+    // 3xx：我们主动不跟随。只说目标 origin，不把整条 Location 回显出去（它是外部输入，没必要原样带进日志/UI）。
     if (resp.status >= 300 && resp.status < 400) {
       const location = resp.headers?.get?.('location') ?? ''
       let where = ''
       try {
-        where = location ? ` → ${oneLine(new URL(location).origin, 120)}` : ''
+        where = location ? ` → ${singleLine(new URL(location).origin, 120)}` : ''
       } catch {
         where = location ? ' → (无效 Location)' : ''
       }
@@ -265,61 +219,49 @@ async function platformBizData(
       )
     }
     const text = await safeText(resp)
-    return err('http', `HTTP ${resp.status}: ${safeMsg(text, token)}`, resp.status) // py:73-74
+    return err('http', `HTTP ${resp.status}: ${safeMsg(text, token)}`, resp.status)
   }
 
   let data: unknown
   try {
-    data = await resp.json() // py:77
+    data = await resp.json()
   } catch {
-    return err('non-json', '返回非 JSON') // py:78-79
+    return err('non-json', '返回非 JSON')
   }
 
-  // Python 用 `data.get(...)`，因此 JSON 顶层必须是对象；否则脚本会抛
-  // AttributeError 崩溃。这里显式降级为错误结果，属于有意的健壮性增强。
   if (!isDict(data)) return err('non-json', '返回结构非 JSON 对象')
 
   if (data.code !== 0) {
-    // 40003 = "Authorization Failed (invalid token)"，HTTP 状态码仍是 200。
-    // 实测：把非「开放平台网页会话令牌」的凭据当 Bearer 打进来就是它
-    // （API Key、DSH 账号推理令牌都会命中）。
-    //
-    // 归为认证失败是必要的：否则刷新循环不会提前终止，会把 31 个月全部
-    // 打一遍（约 31 次请求 / 30 秒）才罢休，用户只会看到一个迟迟不动的进度条。
+    // 40003 = "Authorization Failed (invalid token)"，HTTP 状态码仍是 200。把 API Key 或推理令牌当 Bearer 打进来就是它。
+    // 必须归为认证失败：否则刷新循环不会提前终止，会把 31 个月全打一遍（约 31 次请求 / 30 秒）才罢休，
+    // 用户只看到一个迟迟不动的进度条。
     if (data.code === 40003) {
       return err(
         'unauthorized',
-        `40003 认证失败：该令牌不被${label}接受（msg=${safeMsg(pyStr(data.msg), token)}）`,
+        `40003 认证失败：该令牌不被${label}接受（msg=${safeMsg(toText(data.msg), token)}）`,
       )
     }
     return err(
       'code',
-      `code=${safeMsg(pyStr(data.code), token, 32)} msg=${safeMsg(pyStr(data.msg), token)}`,
-    ) // py:81-82
+      `code=${safeMsg(toText(data.code), token, 32)} msg=${safeMsg(toText(data.msg), token)}`,
+    )
   }
 
-  const inner = (data.data as unknown) || {} // py:84 `data.get("data") or {}`
+  const inner = (data.data as unknown) || {}
   if (!isDict(inner) || inner.biz_code !== 0) {
     const bizCode = isDict(inner) ? inner.biz_code : undefined
     const bizMsg = isDict(inner) ? inner.biz_msg : undefined
     return err(
       'biz_code',
-      `biz_code=${safeMsg(pyStr(bizCode), token, 32)} biz_msg=${safeMsg(pyStr(bizMsg), token)}`,
-    ) // py:85-86
+      `biz_code=${safeMsg(toText(bizCode), token, 32)} biz_msg=${safeMsg(toText(bizMsg), token)}`,
+    )
   }
 
-  // py:88 `return (inner.get("biz_data") or {}), None`
-  //
-  // `unwrapBizData` 抹平两者差异：`/usage/amount` 给对象、`/usage/cost` 给数组。
+  // `usage/amount` 的 biz_data 是对象、`usage/cost` 是数组，由 `unwrapBizData` 抹平。
   return { ok: true, bizData: unwrapBizData(inner.biz_data) }
 }
 
-/**
- * 拉取某月用量（或金额）。等价于 Python `fetch_month(year, month) -> (biz_data, error_msg)`。
- *
- * 返回判别式联合而非 Python 的 `(data, err)` 二元组：`err` 为空串在 Python 里是
- * 假值，用联合类型表达同一语义可以避免「空错误串被当成失败」这类隐式 bug。
- */
+/** 拉取某月用量（或金额）。返回判别式联合而非 `(data, err)` 二元组，避免「空错误串被当成失败」这类隐式 bug。 */
 export async function fetchMonth(opts: FetchMonthOptions): Promise<FetchResult> {
   return platformBizData(
     opts,
@@ -329,17 +271,10 @@ export async function fetchMonth(opts: FetchMonthOptions): Promise<FetchResult> 
 }
 
 /**
- * 读取平台账户概览：充值余额 / 赠送余额 / **官方累计消费**。
- *
- * 为什么要它：`/usage/cost` 是按月归集的金额，逐月相加与官方账单存在极小差异
- * （实测 31 个月求和 ¥676.0696 vs 账单 `total_costs` ¥675.7352，差 0.05%，
- * 来自按请求四舍五入）。把官方账单数一并显示出来，用户就能一眼看出这是
- * 「插件按接口重算」还是「官方口径」。
- *
- * 失败一律降级为 `undefined`（余额不是核心功能，不该因为它失败就让整个刷新报错）；
- * 但 401 仍然要抛出语义 —— 由调用方按需处理。
- *
- * 注：面板上的展示项已按要求移除，但数据链路保留，便于以后再加回。
+ * 读取平台账户概览：充值余额 / 赠送余额 / 官方累计消费。用途是给出「官方口径」的参照：`usage/cost` 是按月
+ * 归集的金额，逐月相加与官方账单会有微小差异（按请求四舍五入所致），把账单数一并显示出来，用户就能一眼
+ * 看出卡片上的数是插件按接口重算的还是官方的。
+ * 失败一律降级为 `undefined`：余额不是核心功能，不该因为它失败就让整个刷新报错。
  */
 export async function fetchAccountSummary(
   opts: PlatformOptions,
@@ -352,19 +287,19 @@ export async function fetchAccountSummary(
     bonus_wallets?: Array<{ currency?: string; balance?: string }>
     total_costs?: Array<{ currency?: string; amount?: string }>
   }
-  const num = (v: unknown): number => {
-    const n = Number(v)
-    return Number.isFinite(n) ? Math.round(n * 1e8) / 1e8 : 0
-  }
   const normal = Array.isArray(raw.normal_wallets) ? raw.normal_wallets : []
   const bonus = Array.isArray(raw.bonus_wallets) ? raw.bonus_wallets : []
   const costs = Array.isArray(raw.total_costs) ? raw.total_costs : []
+  const amount = (v: unknown): number => {
+    const n = Number(v)
+    return Number.isFinite(n) ? Math.round(n * 1e8) / 1e8 : 0
+  }
   return {
     ok: true,
     summary: {
-      balance: num(normal[0]?.balance),
-      bonusBalance: num(bonus[0]?.balance),
-      totalCosts: num(costs[0]?.amount),
+      balance: amount(normal[0]?.balance),
+      bonusBalance: amount(bonus[0]?.balance),
+      totalCosts: amount(costs[0]?.amount),
       currency: costs[0]?.currency ?? normal[0]?.currency ?? 'CNY',
     },
   }

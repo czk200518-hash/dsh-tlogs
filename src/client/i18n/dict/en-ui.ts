@@ -1,12 +1,11 @@
 /**
- * tlogs — 字典 part B（英文）：紧凑条、展开面板、图表、表格、格式化与错误兜底。
+ * tlogs — 字典 part B（英文）：紧凑条、展开面板、图表、表格、错误兜底与格式化。
  *
- * 键必须与 `zh-ui.ts` 完全一致（`dict/en.ts` 会把合并结果标注为中文词典的类型）。
- * 约定：句子用句首大写 + 句号；标签、按钮尽量短；不出现中文量词
- * （`次` / `元` / `亿` / `万` 一律换成 requests / CNY / M / K）。
+ * 键必须与 `zh-ui.ts` 完全一致（`dict/en.ts` 用中文词典的类型来核对）。
+ * 约定：句子首字母大写 + 句号；标签、按钮尽量短；`次` / `元` / `亿` / `万` 换成
+ * requests / CNY / M / K。
  */
 export const enUi = {
-  // ---- Compact bar (form A) ----
   'bar.title': 'tlogs — DeepSeek usage',
   'bar.titleTokens': '{label} {value} tokens{note}',
   'bar.titleRequests': '{label} {value} requests{note}',
@@ -22,7 +21,6 @@ export const enUi = {
   'bar.expand': 'Expand',
   'bar.collapse': 'Collapse',
 
-  // ---- Expanded panel (form B) ----
   'panel.timeBasis': 'Basis: platform days (UTC) · day rolls over at 08:00 Beijing time',
   'panel.dayBasis.utc':
     'The platform API buckets days[] by UTC day; this machine is on UTC, so the local day rolls over at 00:00.{billing}',
@@ -76,7 +74,6 @@ export const enUi = {
   'panel.sourceTip.costPending':
     'Cost uses platform pricing; same-day settlement lags by about 10–30 minutes, so it reads slightly low.',
 
-  // ---- Charts (the modal’s Charts tab and the three charts) ----
   'chart.range.all': 'All time',
   'chart.range.custom': 'Custom',
   'chart.range.today': 'Today',
@@ -168,15 +165,12 @@ export const enUi = {
   'chart.unit.requests': ' requests',
   'chart.unit.money': ' CNY',
 
-  // ---- Stat table ----
   'table.name': 'Name',
   'table.sortBy': 'Sort by {column}',
 
-  // ---- Money formatting (English scales by M / K) ----
   'money.shortBig': 'M',
   'money.shortSmall': 'K',
 
-  // ---- Errors and fallbacks ----
   'error.reason.notScanned': 'Not scanned yet',
   'error.reason.disabled': 'localUsage is disabled in the config',
   'error.reason.noSessionLogs': 'No session logs found (none of the candidate directories exist)',
@@ -191,6 +185,5 @@ export const enUi = {
   'error.noConnection': 'tlogs: this connection does not support RPC (the connection service is missing)',
   'error.rpcFailed': 'tlogs: {endpoint} call failed',
 
-  // ---- List separator (Chinese uses 、, English uses a comma) ----
   'list.separator': ', ',
 }

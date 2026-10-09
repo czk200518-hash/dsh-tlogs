@@ -1,15 +1,10 @@
 /**
- * tlogs — 详细数据弹窗（含日历查询）。
+ * tlogs — the detail modal, calendar included.
  *
- * 取代原先「在侧边栏页脚内就地切换」的详细视图：侧边栏太窄，表格与日历都需要
- * 横向空间，所以改成浮层弹窗（同一容器内不再切换视图）。
- *
- * 日历查询的数据来源：host 侧每个已抓取的月份都把**逐日明细**存进了历史缓存，
- * 因此这里可以回溯任意月份的每一天，而不是只有当月。
- *
- * 关于 `position: fixed`：需求 1.1 要求内嵌组件留在文档流内、不得用 fixed 伪造悬浮；
- * 那一条针对的是**侧边栏页脚里的组件**（紧凑条与展开面板，至今仍然遵守）。
- * 弹窗本质上就该是浮层，因此它的遮罩/对话框使用 fixed。
+ * A real overlay (the one place using position: fixed) rather than an in-place view switch:
+ * the sidebar is too narrow for the tables and the calendar, while the compact bar and the
+ * expanded panel stay in document flow. The host keeps per-day detail for every month it has
+ * fetched, so any month in history can be shown, not just the current one.
  */
 
 import * as React from 'react'
@@ -25,35 +20,32 @@ import type { DetailData, MonthDetail, SeriesQuery, ScopeStat, StatRow, UsageSer
 export interface DetailModalProps {
   detail: DetailData | null
   monthDetail: MonthDetail | null
-  /** 图表数据（图表页签用）。 */
   series: UsageSeries | null
-  /** 图表数据是否正在请求。 */
   seriesLoading: boolean
-  /** 详细数据是否仍在加载。 */
   loading: boolean
   busy: boolean
   error?: string | null
   onClose: () => void
   onRefresh: () => void
-  /** 请求切换日历显示的月份（host 侧按需拉取该月逐日明细）。 */
+  /** Ask for the month the calendar should show; the host fetches that month's daily detail. */
   onSelectMonth: (year: number, month: number) => void
-  /** 请求图表数据（范围 × 项目）。 */
+  /** Ask for chart data (range × project). */
   onLoadSeries: (query: SeriesQuery) => void
 }
 
 type Tab = 'calendar' | 'charts' | 'models' | 'providers' | 'years' | 'months' | 'days' | 'settings'
 
 /**
- * 页签表里存的是**键**而不是文案：文案要随语言切换实时变，
- * 所以只能在渲染时翻译，不能在模块加载时定死。
- * 「设置」放在最后 —— 那一排的末尾，与其它数据页签区分开。
+ * The tab table holds keys, not text: labels have to follow the language, so they are resolved
+ * at render time rather than frozen at module load. Settings sits last, set apart from the data
+ * tabs. The providers table follows the platform-scoped models table although its rows come
+ * from the local session logs (including Volcengine / Xiaomi / GLM usage the platform bill
+ * never sees); each header explains the difference in scope.
  */
 const TABS: Array<{ id: Tab; labelKey: MessageKey }> = [
   { id: 'calendar', labelKey: 'tab.calendar' },
   { id: 'charts', labelKey: 'tab.charts' },
   { id: 'models', labelKey: 'tab.models' },
-  // 「供应商」表来自本机会话日志（含平台账单看不到的火山方舟/小米/GLM…），
-  // 紧跟在平台口径的「模型」表后面，两张表的口径差异在表头上写明。
   { id: 'providers', labelKey: 'tab.providers' },
   { id: 'years', labelKey: 'tab.years' },
   { id: 'months', labelKey: 'tab.months' },
@@ -61,7 +53,7 @@ const TABS: Array<{ id: Tab; labelKey: MessageKey }> = [
   { id: 'settings', labelKey: 'tab.settings' },
 ]
 
-/** 周一起始的星期标题（与插件「本周 = 周一至今」的口径一致）。 */
+/** Weekday headers in Monday-first order, matching the plugin's "this week = Monday to now". */
 const WEEKDAY_KEYS: MessageKey[] = [
   'weekday.1',
   'weekday.2',
@@ -75,7 +67,7 @@ const WEEKDAY_KEYS: MessageKey[] = [
 const pad2 = (n: number): string => String(n).padStart(2, '0')
 const ymKey = (y: number, m: number): string => `${y}-${pad2(m)}`
 
-/** 解析 `YYYY-MM`。非法返回 undefined。 */
+/** Parse `YYYY-MM`; undefined when the key is malformed. */
 function parseYm(key: string): { year: number; month: number } | undefined {
   const m = /^(\d{4})-(\d{1,2})$/.exec(key)
   if (!m) return undefined
@@ -85,18 +77,18 @@ function parseYm(key: string): { year: number; month: number } | undefined {
   return { year, month }
 }
 
-/** 某年某月的天数。 */
+/** Number of days in a month. */
 function daysInMonth(year: number, month: number): number {
   return new Date(Date.UTC(year, month, 0)).getUTCDate()
 }
 
-/** 该月 1 日是周几（0=周日），偏移到「周一起始」的 0..6。 */
+/** Weekday of the 1st (0 = Sunday) shifted to a Monday-first 0..6. */
 function leadingBlanks(year: number, month: number): number {
   const dow = new Date(Date.UTC(year, month - 1, 1)).getUTCDay()
   return (dow + 6) % 7
 }
 
-/** 只取展示需要的四个计数（ScopeStat 结构上兼容它）。 */
+/** The four counters the display needs; ScopeStat is structurally compatible with it. */
 type Counters = {
   inputTokens: number
   outputTokens: number
@@ -108,10 +100,10 @@ type Counters = {
 const ZERO_COUNTERS: Counters = { inputTokens: 0, outputTokens: 0, totalTokens: 0, requests: 0 }
 
 /**
- * 汇总行：输入 / 输出 / 总 Token / 请求（+ 有金额时的 ¥）。
+ * Summary row: input / output / total tokens / requests, plus ¥ when there is cost data.
  *
- * 金额项**只在真的有金额数据时出现**：没有金额而硬显示 ¥0.00 会让人以为真没花钱，
- * 而实际是那一段还没回补到金额。
+ * The money entry appears only when there really is cost data: a hard ¥0.00 would claim the
+ * period spent nothing, when the backfill simply has not reached it.
  */
 function statLine(
   stat: Counters,
@@ -135,7 +127,7 @@ function statLine(
   return out
 }
 
-/** 日历面板。 */
+/** Calendar panel. */
 function Calendar(props: {
   months: StatRow[]
   monthDetail: MonthDetail | null
@@ -145,21 +137,18 @@ function Calendar(props: {
   const t = useT()
 
   /**
-   * 月份一律按 `YYYY-MM` 升序处理，**不依赖 host 的下发顺序**。
-   *
-   * （原先直接用传入数组的末项当默认月份，一旦顺序是降序就会默认到更早的月份 ——
-   * 实测就踩到了：默认落在 8 月而不是 9 月。）
+   * Months are always handled in ascending `YYYY-MM` order and never in the host's delivery
+   * order: defaulting to the last entry would land on an earlier month whenever the host sends
+   * them descending.
    */
   const sorted = React.useMemo(
     () => [...months].sort((a, b) => a.key.localeCompare(b.key)),
     [months],
   )
 
-  /** 已选月份：初始为最新一个有数据的月份。 */
   const [sel, setSel] = React.useState<{ year: number; month: number } | null>(null)
   const [selectedDate, setSelectedDate] = React.useState<string | null>(null)
 
-  // 月份列表就绪后补上默认选中项（只在还没选过时）。
   React.useEffect(() => {
     if (sel || sorted.length === 0) return
     const last = sorted[sorted.length - 1]!
@@ -191,7 +180,6 @@ function Calendar(props: {
     return ym ?? { year: 0, month: 0 }
   })()
 
-  // 该月逐日统计：date -> 计数（含金额）
   const byDate = new Map<string, Counters>()
   for (const d of monthDetail?.days ?? []) byDate.set(d.key, d.stat)
   const maxDay = Math.max(1, ...[...byDate.values()].map((s) => s.totalTokens))
@@ -202,14 +190,10 @@ function Calendar(props: {
   const blanks = leadingBlanks(current.year, current.month)
 
   /**
-   * 日历**固定 6 行（42 格）**，不足的部分补空格。
-   *
-   * 为什么：一次最多需要 6 行（31 天 + 最多 6 个前置空格）。如果按实际需要渲染，
-   * 7 月只要 5 行、8 月要 6 行，切月时弹窗高度就会跳一下（用户实测反馈）。补满 42 格
-   * 后无论怎么切月，网格高度恒定。
-   *
-   * 同理：金额那一行**无条件渲染**（无金额时留空占位），否则有/无金额的月份之间
-   * 单元格高度会差一行，切月时高度又跳 —— 这正是网格高度恒定要避免的事。
+   * The calendar always renders 6 rows (42 cells), padded with blanks; 31 days plus up to 6
+   * leading blanks is the worst case. Rendering only what a month needs would make the dialog
+   * height jump between a 5-row and a 6-row month. The money line is rendered unconditionally
+   * for the same reason, empty when there is no data, so cells keep a single height.
    */
   const CAL_CELLS = 42
   const cells: Array<React.ReactElement> = []
@@ -220,7 +204,8 @@ function Calendar(props: {
     const date = `${ymKey(current.year, current.month)}-${pad2(day)}`
     const stat = byDate.get(date)
     const value = stat?.totalTokens ?? 0
-    // 热度按 token 与金额的较大者着色：否则「token 少但很贵」的日子会看不出来。
+    // Heat takes the larger of the token and cost ratios, so an expensive day with few tokens
+    // does not stay invisible.
     const heatToken = stat ? value / maxDay : 0
     const dayCost = stat?.cost ? moneyTotal(stat.cost) : 0
     const heatCost = maxCost > 0 ? dayCost / maxCost : 0
@@ -251,7 +236,6 @@ function Calendar(props: {
       </button>,
     )
   }
-  // 尾部补齐到固定格数，保证 6 行恒定
   for (let i = cells.length; i < CAL_CELLS; i++) {
     cells.push(<div key={`tail-${i}`} className="tlogs-cal-cell is-empty" />)
   }
@@ -315,8 +299,8 @@ function Calendar(props: {
       </div>
 
       {byDate.size === 0 ? (
-        // 兜底：确实拿不到该月逐日明细时，明确说明而不是渲染一片「—」。
-        // （正常情况下插件会自动回补缺失的逐日明细，见 history.plan 的说明。）
+        // Fallback: say the daily detail is unavailable rather than render a grid of dashes.
+        // The plugin normally backfills missing days (history.plan).
         <div className="tlogs-empty">{t('cal.noDaily')}</div>
       ) : (
         <Fragment>
@@ -355,7 +339,7 @@ export function DetailModal(props: DetailModalProps): React.ReactElement {
   const [tab, setTab] = React.useState<Tab>('calendar')
   const t = useT()
 
-  // Esc 关闭：弹窗的基本可用性要求。
+  // Escape closes the dialog.
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
@@ -369,7 +353,6 @@ export function DetailModal(props: DetailModalProps): React.ReactElement {
       className="tlogs-modal-mask"
       role="presentation"
       onClick={(e: React.MouseEvent) => {
-        // 只有点遮罩本身才关闭；点对话框内部不关闭。
         if (e.target === e.currentTarget) onClose()
       }}
     >
@@ -409,7 +392,8 @@ export function DetailModal(props: DetailModalProps): React.ReactElement {
           </div>
 
           {tab === 'settings' ? (
-            // 设置页签**先于**加载分支：语言开关不该因为用量还没拉回来就点不开。
+            // Settings renders before the loading branch: the language switch must not be
+            // blocked while usage is still loading.
             <SettingsPanel />
           ) : loading && !detail ? (
             <div className="tlogs-empty">{t('common.loading')}</div>
@@ -428,8 +412,9 @@ export function DetailModal(props: DetailModalProps): React.ReactElement {
             />
           ) : tab === 'providers' ? (
             <div>
-              {/* 口径与覆盖区间必须写在表头上：本机口径来自会话日志，DSH 会清理旧日志，
-                  所以它不是「有史以来」，而且它与上面那张平台「模型」表口径不同。 */}
+              {/* Scope and coverage belong in the header: local usage comes from session logs,
+                  which DSH prunes, so it is not "all time" and its scope differs from the
+                  platform models table above. */}
               <div className="tlogs-hint">
                 {detail?.localRange
                   ? t('providers.localRange', {
@@ -458,8 +443,9 @@ export function DetailModal(props: DetailModalProps): React.ReactElement {
             </div>
           ) : tab === 'models' && detail?.modelsIncludeLocal ? (
             <div>
-              {/* 模型表混了两路口径，必须说明：平台行有官方金额，本机行（别家平台
-                  的模型）没有金额、且只覆盖会话日志还在的那些天。 */}
+              {/* The models table mixes two scopes: platform rows carry an official cost, local
+                  rows (models from other platforms) have none and cover only the days whose
+                  session logs still exist. */}
               <div className="tlogs-hint">{t('providers.modelsNote')}</div>
               <StatTable rows={detail?.models ?? []} />
             </div>

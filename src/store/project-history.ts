@@ -1,20 +1,12 @@
 /**
- * tlogs — 项目用量的**逐日快照**（图表「指定项目」的时间序列来源）。
+ * tlogs — 项目用量的逐日快照（图表「指定项目」的时间序列来源）。
  *
- * ## 为什么需要它
- *
- * 平台账单接口（`/usage/amount`）是**账号维度**，没有任何项目信息；而宿主暴露的
- * 项目用量（`tokenUsage` 投影）只有**累计至今**一个数，没有时间轴。两者都无法单独
- * 回答「这个项目最近的用量走势如何」。因此本项目在本地按天记录每个项目的累计值 ——
- * 有了相邻两天的快照，就能算出当天新增，也能画出增长曲线。
- *
- * ## 口径与边界（刻意写清楚，避免误读）
- *
- *  - 快照值是**当时观测到的累计用量**，不是当日新增；差值才是当日新增。
- *  - 快照只能从插件开始运行之后累积，**无法回溯**历史。这一点由 UI 明示。
- *  - 同一天重复记录会**覆盖**（保留当天最后一次观测值），因此一天最多一个点。
- *  - 只存 `id`（`publicProjectId` 的不可逆短哈希）与**纯数字**用量，不存标签、
- *    不存 cwd、不存任何会话内容 —— 落盘内容与「缓存里只有用量计数」的既有承诺一致。
+ * 平台账单接口是账号维度的，没有项目信息；宿主暴露的项目用量只有「累计至今」一个数，没有
+ * 时间轴。所以这里在本地按天记录每个项目的累计值 —— 有相邻两天的快照就能算出当天新增，也能
+ * 画出增长曲线。边界：快照值是「当时观测到的累计用量」，不是当日新增（差值才是）；快照只能从
+ * 插件开始运行之后累积，无法回溯历史，这一点由 UI 明示；同一天重复记录会覆盖（留当天最后一次
+ * 观测值），因此一天最多一个点；只存 id（`publicProjectId` 的不可逆短哈希）与纯数字用量，
+ * 不存标签、不存 cwd、不存任何会话内容。
  */
 
 import { addInto } from '../api/parser.js'
@@ -26,24 +18,22 @@ export interface ProjectSnapshot {
   stat: Stat
 }
 
-/** 单个项目的快照序列（内部按日期升序保存）。 */
+/** 单个项目的快照序列，内部按日期升序保存。 */
 interface Entry {
   /** date -> 当天的累计用量。 */
   points: Map<string, Stat>
 }
 
 /**
- * 每个项目保留的最大快照天数。
- *
- * 一天一条，1500 天 ≈ 4 年。超过后丢弃最旧的 —— 防止缓存文件无限增长
- * （单条只有 5 个整数，实际占用极小）。
+ * 每个项目保留的最大快照天数：一天一条，1500 天约四年；单条只有 5 个整数，所以这个上限只是
+ * 防止缓存文件无限增长。
  */
 export const MAX_POINTS_PER_PROJECT = 1500
 
-/** 兜底：项目数量上限，防止异常宿主返回海量项目把文件撑爆。 */
+/** 项目数量上限，防止异常宿主返回海量项目把文件撑爆。 */
 export const MAX_PROJECTS = 500
 
-/** 校验日期键 `YYYY-MM-DD` 且月份/日期合法。 */
+/** 校验 `YYYY-MM-DD`，并确认月份/日期真实存在。 */
 function isValidDateKey(key: string): boolean {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(key)
   if (!m) return false
@@ -52,15 +42,15 @@ function isValidDateKey(key: string): boolean {
   const day = Number(m[3])
   if (month < 1 || month > 12) return false
   if (day < 1 || day > 31) return false
-  // 用 UTC 回环校验真实天数（例如 2026-02-30 会被归一到 3 月）。
+  // 用 UTC 回环校验真实天数（2026-02-30 会被归一到 3 月，于是对不上）。
   const d = new Date(Date.UTC(year, month - 1, day))
   return d.getUTCFullYear() === year && d.getUTCMonth() === month - 1 && d.getUTCDate() === day
 }
 
-/** 校验项目 id：`publicProjectId` 的形状（16 位小写十六进制）。 */
+/** `publicProjectId` 的形状：16 位小写十六进制。 */
 const PROJECT_ID_RE = /^[0-9a-f]{16}$/
 
-/** 从任意 JSON 归一化出一个 Stat（缺键补 0，非有限数归 0）。 */
+/** 从任意 JSON 里归一化出一个 Stat；一个合法字段都没有时返回 undefined。 */
 function normalizeStat(raw: unknown): Stat | undefined {
   if (!raw || typeof raw !== 'object') return undefined
   const r = raw as Record<string, unknown>
@@ -81,22 +71,20 @@ export class ProjectHistoryStore {
   private readonly byId = new Map<string, Entry>()
 
   /**
-   * 记录（或覆盖）某项目在某天的累计用量。
-   *
-   * @returns 是否真的写入了（`id` / `date` 非法或 `stat` 全零时返回 false）
+   * 记录或覆盖某项目在某天的累计用量；id / date 非法或 stat 全零时返回 false。
    */
   record(id: string, date: string, stat: Stat): boolean {
     if (!PROJECT_ID_RE.test(id) || !isValidDateKey(date)) return false
     let entry = this.byId.get(id)
     if (!entry) {
-      // 新项目：超上限时直接拒绝（而不是淘汰旧项目 —— 快照是历史，丢了就再也回不来）。
+      // 新项目超上限就直接拒绝：快照是历史，淘汰旧项目等于永久丢数据。
       if (this.byId.size >= MAX_PROJECTS) return false
       entry = { points: new Map() }
       this.byId.set(id, entry)
     }
     entry.points.set(date, { ...stat })
 
-    // 超上限：丢弃最旧的若干天（日期键可直接字符串排序）。
+    // 超上限就丢最旧的若干天（日期键定长，可直接字符串排序）。
     if (entry.points.size > MAX_POINTS_PER_PROJECT) {
       const keys = [...entry.points.keys()].sort()
       for (const k of keys.slice(0, entry.points.size - MAX_POINTS_PER_PROJECT)) {
@@ -106,7 +94,7 @@ export class ProjectHistoryStore {
     return true
   }
 
-  /** 某项目的全部快照（按日期升序）。 */
+  /** 某项目的全部快照，按日期升序。 */
   points(id: string): ProjectSnapshot[] {
     const entry = this.byId.get(id)
     if (!entry) return []
@@ -115,12 +103,12 @@ export class ProjectHistoryStore {
       .map(([date, stat]) => ({ date, stat: { ...stat } }))
   }
 
-  /** 某项目在闭区间 `[from, to]` 内的快照（升序）。 */
+  /** 某项目在闭区间 `[from, to]` 内的快照，升序。 */
   pointsBetween(id: string, from: string, to: string): ProjectSnapshot[] {
     return this.points(id).filter((p) => p.date >= from && p.date <= to)
   }
 
-  /** 某项目在 `date` **之前**的最后一次快照（没有则 undefined）。 */
+  /** 某项目在 `date` 之前的最后一次快照。 */
   lastBefore(id: string, date: string): ProjectSnapshot | undefined {
     let found: ProjectSnapshot | undefined
     for (const p of this.points(id)) {
@@ -135,19 +123,18 @@ export class ProjectHistoryStore {
     return [...this.byId.keys()]
   }
 
-  /** 项目数量。 */
   get size(): number {
     return this.byId.size
   }
 
-  /** 某个 id 的全部快照总条数（诊断/测试用）。 */
+  /** 某个 id 的快照总条数，诊断与测试用。 */
   count(id: string): number {
     return this.byId.get(id)?.points.size ?? 0
   }
 
   /**
-   * 项目在各日期上的累计合计（用于「所有项目」的走势与对比）。
-   * 只返回**有快照的日期**，同一天把所有项目相加。
+   * 各日期的累计合计（用于「所有项目」的走势与对比）：只返回有快照的日期，
+   * 同一天把所有项目相加。
    */
   dailyTotals(): ProjectSnapshot[] {
     const acc = new Map<string, Stat>()
@@ -170,9 +157,7 @@ export class ProjectHistoryStore {
     this.byId.clear()
   }
 
-  /**
-   * 序列化。**刻意不含 label**：标签可能含目录名，落盘的只有哈希 id 与数字。
-   */
+  /** 序列化时不含 label：标签可能含目录名，落盘只留哈希 id 与数字。 */
   serialize(): { projects: Array<{ id: string; points: ProjectSnapshot[] }> } {
     return {
       projects: [...this.byId.keys()].map((id) => ({ id, points: this.points(id) })),
@@ -180,9 +165,8 @@ export class ProjectHistoryStore {
   }
 
   /**
-   * 从持久化 JSON 就地恢复（非法输入静默跳过，坏缓存不该让插件起不来）。
-   *
-   * @returns 恢复的项目条数
+   * 从持久化 JSON 就地恢复，非法条目静默跳过（坏缓存不该让插件起不来）。
+   * 返回恢复成功的项目条数。
    */
   load(data: unknown): number {
     if (!data || typeof data !== 'object') return 0
@@ -209,12 +193,12 @@ export class ProjectHistoryStore {
   }
 }
 
-/** 是否看起来像一个合法的项目 id（供 RPC 入参校验复用）。 */
+/** 是否是合法的项目 id（RPC 入参校验复用）。 */
 export function isProjectId(value: unknown): value is string {
   return typeof value === 'string' && PROJECT_ID_RE.test(value)
 }
 
-/** 是否看起来像一个合法的日期键（供 RPC 入参校验复用）。 */
+/** 是否是合法的日期键（RPC 入参校验复用）。 */
 export function isDateKey(value: unknown): value is string {
   return typeof value === 'string' && isValidDateKey(value)
 }

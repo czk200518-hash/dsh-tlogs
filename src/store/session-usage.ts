@@ -1,44 +1,26 @@
 /**
- * tlogs — **本机口径**：从 DSH 会话日志重建逐日真实用量。
+ * tlogs — 本机口径：从 DSH 会话日志重建逐日真实用量。
  *
- * ## 为什么需要它
+ * 平台的 `/usage/amount` 是「账号 + 官方通道」口径，且当天数据要等平台结算才出现（滞后约
+ * 10~30 分钟）；非 DeepSeek 供应商（火山方舟 / 小米 / GLM / GPT 等）平台完全看不到。本机口径
+ * 实时、覆盖本机所有供应商，但只看得到本机。两路都是必需的，合并规则见 `usage-merge.ts`。
  *
- * 平台的 `/usage/amount` 是**账号 + 官方通道**的口径，且当天数据要等平台结算
- * 才出现（实测 2026-10-08 北京时间 12:07 平台该日桶仍为 0，而本机当天已用 980 万
- * token；12:16 补到 589 万、12:34 补到 3022 万，即滞后约 10~30 分钟）。另外
- * **非 DeepSeek 供应商**（火山方舟 / 小米 / GLM / GPT 等）平台完全看不到
- * （实测 2026-09-18、09-19 本机走火山方舟共用 1.16 亿 token，平台这两天都是 0）。
+ * 口径与语义（与 DSH 自己的 costUsage 投影逐条对齐）：
+ *  - usage 事件有两种：`assistant/chunk`（`data.chunk.type === 'usage'`，流式样本）与
+ *    `assistant/message`（`data.usage`，最终样本）。同一 `(turn, step)` 只记一次，后到的最终
+ *    样本替换先到的流式样本，否则一次调用会被记两遍。
+ *  - fork 种子事件必须剔除：DSH 的 fork 会把父会话整段事件流拷进子会话日志，这些事件的
+ *    `time` 早于会话 header 的 `createdAt`，而父会话已经计过。不剔除会让用量翻倍。
+ *  - `provider` / `model` 取自 `request/header.data.header.config`，样本可用 `assistant/message`
+ *    的 `message.source` 覆盖。
+ *  - 日键一律用 UTC 日（与平台日桶同一口径，见 `store/dates.ts`），两路数据才能逐日直接比较、合并。
  *
- * 于是本插件走双路：
- *   - **平台口径**（`usage/amount`）：官方、跨设备，但当天滞后、只覆盖官方通道；
- *   - **本机口径**（本模块）：实时、覆盖本机所有供应商，但只看得到本机。
- *
- * 合并规则见 `usage-merge.ts`。
- *
- * ## 口径与语义（与 DSH 自己的 costUsage 投影逐条对齐）
- *
- *  - usage 事件有两种：`assistant/chunk`（`data.chunk.type === 'usage'`，流式样本）
- *    与 `assistant/message`（`data.usage`，最终样本）。**同一 `(turn, step)` 只记一次**
- *    —— 后到的最终样本替换先到的流式样本，否则一次调用会被记两遍。
- *  - **fork 种子事件必须剔除**：DSH 的 fork 会把父会话整段事件流拷进子会话日志，
- *    这些事件的 `time` 早于会话 header 的 `createdAt`。父会话已经计过，
- *    再计一次就是双倍（实测：不剔除时 2026-10-07 本机为 15.5 亿，
- *    剔除后 5.61 亿，与平台同日的 5.98 亿相差 6%）。
- *  - `provider` / `model` 取自 `request/header.data.header.config`，样本可用
- *    `assistant/message` 的 `message.source` 覆盖。
- *  - 日键一律用 **UTC 日**（与平台日桶同一口径，见 `store/dates.ts`），
- *    这样两路数据可以逐日直接比较、合并。
- *
- * ## 安全与资源边界
- *
- *  - **只读**：本模块只读 `$DSH_HOME/sessions/**` 下的会话日志，从不写入。
- *  - 只从日志里取 **usage 数字**（五个计数）与 provider/model 名，不读消息正文；
- *    超长打包行（text/reasoning/tool-call-chunks）在解析前就被探针跳过。
- *  - 内存与事件循环守卫：分块读 + 逐帧解压（任一时刻只持有一帧解压结果）、
- *    单文件解压预算、每 N 帧让出事件循环。
- *  - 落盘时**只存 file 路径的不可逆短哈希**与数字，不存路径本身
- *    （会话目录名里编码了工作区路径）。
- *  - 增量：只重新解析 size/mtime 变化的日志；超过窗口的老日志直接跳过。
+ * 安全与资源边界：只读 `$DSH_HOME/sessions/**` 下的会话日志，从不写入；只从日志里取 usage
+ * 数字（五个计数）与 provider/model 名，不读消息正文 —— 超长打包行
+ * （text/reasoning/tool-call-chunks）在解析前就被探针跳过。内存与事件循环守卫：分块读 +
+ * 逐帧解压（任一时刻只持有一帧解压结果）、单文件解压预算、每 N 帧让出事件循环。落盘只存文件
+ * 路径的不可逆短哈希与数字，不存路径本身（会话目录名里编码了工作区路径）。增量：只重新解析
+ * size/mtime 变化的日志；超出窗口的老日志直接跳过。
  */
 
 import { open, readdir, stat } from 'node:fs/promises'
@@ -50,24 +32,21 @@ import { addInto } from '../api/parser.js'
 import { dateKey } from './dates.js'
 import { emptyStat, TOKEN_TYPES, type Stat } from '../types.js'
 
-/** Zstandard frame 魔数（小端读出的 0xFD2FB528）。 */
+/** Zstandard frame 魔数，小端读出的 0xFD2FB528。 */
 const ZSTD_MAGIC = 0xfd2fb528
 
-/** 打包行类型：体积主体，且不含 header/usage，回放时一律跳过。 */
+/** 打包行：体积主体，且不含 header/usage，回放时一律跳过。 */
 const PACKED_ROW_TYPES = new Set(['text-chunks', 'reasoning-chunks', 'tool-call-chunks'])
 const PACKED_ROW_PROBE = /"(?:text|reasoning|tool-call)-chunks"/
 const PACKED_ROW_PROBE_HEAD = 512
 const PACKED_ROW_PROBE_MIN_LINE = 4096
 
-/** 单文件解压上限（防解压炸弹；正常会话日志解压后数百 MB）。 */
+/** 单文件解压上限，防解压炸弹（正常日志解压后数百 MB）；每 N 帧让出一次事件循环，避免卡住宿主。 */
 export const DEFAULT_MAX_DECOMPRESSED_PER_FILE = 2 * 1024 * 1024 * 1024
-/** 流式读文件的分块大小。 */
 const READ_CHUNK_BYTES = 8 * 1024 * 1024
-/** 每 N 帧让出一次事件循环，避免卡住宿主。 */
 const YIELD_EVERY_FRAMES = 256
-/** 默认保留的最近天数（近 30 天窗口 + 1 天余量）。 */
+/** 近 30 天窗口 + 1 天余量；`MAX_PROVIDER_LEN` 防日志里出现畸形超长字符串。 */
 export const DEFAULT_MAX_DAYS = 32
-/** 单个供应商名字符数上限（防日志里出现畸形超长字符串）。 */
 const MAX_PROVIDER_LEN = 64
 
 /** 会话日志文件名：`session[.vN].jsonl[.zstd]`。 */
@@ -79,20 +58,16 @@ export interface ModelUsage {
   stat: Stat
 }
 
-/** 一个供应商在某一天的用量（含按模型拆分）。 */
 export interface ProviderUsage {
   provider: string
   stat: Stat
   /**
-   * 该供应商下按模型的拆分（按 token 降序）。
-   *
-   * 为什么留着模型这一层：用户可能同时用别家平台的模型（火山方舟 / 小米 / GLM…），
-   * 平台账单完全看不到这些，只能靠本机口径回答「哪个供应商的哪个模型用了多少」。
+   * 该供应商下按模型的拆分（按 token 降序）。用户可能同时用别家平台的模型（火山方舟 /
+   * 小米 / GLM…），平台账单完全看不到这些，只能靠本机口径回答「哪个供应商的哪个模型用了多少」。
    */
   models?: ModelUsage[]
 }
 
-/** 某一天的用量（本机口径）。 */
 export interface LocalDayUsage {
   /** UTC 日键 `YYYY-MM-DD`。 */
   date: string
@@ -104,11 +79,11 @@ export interface LocalDayUsage {
 
 /** 本机口径的读取结果。 */
 export interface LocalUsageReport {
-  /** 是否可用（目录存在、读到至少一个日志、zstd 可用）。 */
+  /** 目录存在、读到至少一个日志、且 zstd 可用时才为 true。 */
   available: boolean
-  /** 不可用/降级的原因，供 UI 与日志说明。 */
+  /** 不可用或降级的原因，供 UI 与日志说明。 */
   reason?: string
-  /** 逐日用量（升序；只保留最近 `maxDays` 天）。 */
+  /** 只保留最近 `maxDays` 天，升序。 */
   days: LocalDayUsage[]
   /** 参与聚合的日志文件数。 */
   totalFiles: number
@@ -130,37 +105,32 @@ interface ProviderAgg {
 type FileDays = Map<string, Map<string, ProviderAgg>>
 
 interface FileRecord {
-  /** 路径的不可逆短哈希（落盘只留它）。 */
+  /** 路径的短哈希（落盘只留它）。 */
   key: string
   size: number
   mtimeMs: number
   days: FileDays
   /**
-   * 原始路径**只在内存里**保留：落盘不留路径（会话目录名编码了工作区路径）。
-   * 因此重启后恢复出来的记录没有 path，会走一次重解析。
+   * 原始路径只在内存里保留：落盘不留路径（会话目录名编码了工作区路径），因此重启后恢复出来
+   * 的记录没有 path，会走一次重解析。
    */
   path?: string
 }
 
 export interface SessionUsageOptions {
-  /** 单个会话根目录（测试/显式指定用；会被放在候选列表最前面）。 */
+  /** 测试或显式指定用；会被放在候选列表最前面。 */
   root?: string
   /**
-   * 候选会话根目录（按优先级）。第一个**真的能列出日志**的会被选中。
-   *
-   * 为什么要候选：`DSH_HOME` 在 web/CLI 下是 DSH 主目录，在桌面端却是
-   * `<主目录>/profiles/<profile>`（会话日志仍在 `<主目录>/sessions`）。
-   * 只认 `<DSH_HOME>/sessions` 会让桌面端永远「本机口径无数据」（实测踩过：
-   * `~/.dsh/profiles/desktop/sessions` 不存在，`~/.dsh/sessions` 才有日志）。
+   * 候选会话根目录（按优先级）：第一个真的能列出日志的会被选中。需要候选是因为 `DSH_HOME`
+   * 在 web/CLI 下是 DSH 主目录，在桌面端却是 `<主目录>/profiles/<profile>`，而会话日志仍在
+   * `<主目录>/sessions` —— 只认 `<DSH_HOME>/sessions` 会让桌面端永远「本机口径无数据」。
    * 由 `config.sessionDirCandidates()` 生成。
    */
   roots?: Array<{ label: string; dir: string }>
   logger?: { warn?: (m: string) => void; info?: (m: string) => void }
-  /** 只保留最近多少天（默认 32）。 */
   maxDays?: number
-  /** 单文件解压预算（默认 2GB）。 */
   maxDecompressBytesPerFile?: number
-  /** 注入时钟（测试用）。 */
+  /** 测试用。 */
   now?: () => number
 }
 
@@ -172,8 +142,8 @@ export function fileKey(path: string): string {
 /**
  * 结构化扫描拼接的 Zstandard frame 边界（不解压内容）。
  *
- * 与宿主 `dsh-session-persistence-jsonl` 的容器一致：每个追加批次一个独立带
- * 校验和的 frame。残缺尾帧（崩溃截断）或结构非法处直接停止。
+ * 与宿主 `dsh-session-persistence-jsonl` 的容器一致：每个追加批次一个独立带校验和的
+ * frame。残缺尾帧（崩溃截断）或结构非法处直接停止。
  */
 export function scanZstdFrames(buffer: Buffer): Array<{ start: number; end: number }> {
   const frames: Array<{ start: number; end: number }> = []
@@ -241,9 +211,8 @@ export function zstdAvailable(): boolean {
 /**
  * 流式逐行读取一份会话日志。
  *
- * `zstd` 容器按帧边界增量扫描：分块读入原始字节，已确认完整的帧立即解压并逐行
- * 产出、随后释放引用；跨块/跨帧的行缓冲与压缩尾部单独保留。明文 `.jsonl`
- * 直接按行切。
+ * `zstd` 容器按帧边界增量扫描：分块读入原始字节，已确认完整的帧立即解压并逐行产出、
+ * 随后释放引用；跨块/跨帧的行缓冲与压缩尾部单独保留。明文 `.jsonl` 直接按行切。
  */
 export async function* iterateSessionRecords(
   path: string,
@@ -293,8 +262,8 @@ export async function* iterateSessionRecords(
       while (offset < data.length) {
         const frames = scanZstdFrames(data.subarray(offset))
         if (frames.length === 0) {
-          // 剩余字节连不出完整帧：未满一个分块 = 尾部截断，留待下一块；
-          // 已满一个分块仍无帧 = 结构损坏，忽略文件后续内容。
+          // 剩余字节连不出完整帧：未满一个分块 = 尾部截断，留待下一块；已满一个分块仍无帧
+          // = 结构损坏，忽略文件后续内容。
           if (data.length - offset >= READ_CHUNK_BYTES) return
           tail = data.subarray(offset)
           break
@@ -341,9 +310,8 @@ function providerName(v: unknown): string | undefined {
 /**
  * 回放一份会话日志，得到 `UTC 日 → provider → Stat`。
  *
- * 状态机与 DSH 的 costUsage 投影对齐：`request/header` 切换当前 provider/model；
- * usage 样本按 `(turn, step)` 去重（后者替换前者）；`time < createdAt` 的 fork
- * 种子事件整体剔除。
+ * 状态机与 DSH 的 costUsage 投影对齐：`request/header` 切换当前 provider/model；usage 样本按
+ * `(turn, step)` 去重（后者替换前者）；`time < createdAt` 的 fork 种子事件整体剔除。
  */
 export async function replaySessionUsage(
   path: string,
@@ -407,8 +375,8 @@ export async function replaySessionUsage(
     const stat = emptyStat()
     stat.PROMPT_CACHE_MISS_TOKEN = amount(usage.inputTokens)
     stat.PROMPT_CACHE_HIT_TOKEN = amount(usage.cacheReadTokens)
-    // 平台五类里没有 cache-write 的位置，且本机实测恒为 0；归到 PROMPT_TOKEN
-    // 只是为了「总输入 = PROMPT + HIT + MISS」这条恒等式仍然成立。
+    // 平台五类里没有 cache-write 的位置，且本机该字段恒为 0；归到 PROMPT_TOKEN 只是为了
+    // 「总输入 = PROMPT + HIT + MISS」这条恒等式仍然成立。
     stat.PROMPT_TOKEN = amount(usage.cacheWriteTokens)
     stat.RESPONSE_TOKEN = amount(usage.outputTokens)
     stat.REQUEST = 1
@@ -491,9 +459,8 @@ export async function listSessionLogs(root: string): Promise<Array<{ path: strin
 /**
  * 本机口径存储。
  *
- * 增量策略：按文件记录 `(size, mtimeMs)` 与其逐日贡献；只有变化的文件重新解析，
- * 白天反复刷新时通常只重解析当前活跃的 1–3 个日志。老于窗口的文件直接跳过
- * （它们不可能含窗口内的样本）。
+ * 增量策略：按文件记录 `(size, mtimeMs)` 与其逐日贡献；只有变化的文件重新解析，白天反复
+ * 刷新时通常只重解析当前活跃的 1–3 个日志。老于窗口的文件直接跳过（它们不可能含窗口内样本）。
  */
 export class SessionUsageStore {
   private readonly roots: Array<{ label: string; dir: string }>
@@ -514,7 +481,7 @@ export class SessionUsageStore {
   }
 
   constructor(opts: SessionUsageOptions) {
-    /** 候选列表：显式 `root` 优先，然后是 `roots`（去重）。 */
+    // 候选列表：显式 `root` 优先，然后是 `roots`（去重）。
     const roots: Array<{ label: string; dir: string }> = []
     if (opts.root && opts.root.trim().length > 0) roots.push({ label: 'root', dir: opts.root })
     for (const r of opts.roots ?? []) {
@@ -529,7 +496,7 @@ export class SessionUsageStore {
     this.now = opts.now ?? (() => Date.now())
   }
 
-  /** 最近一次扫描结果（同步读取，供 snapshot 使用）。 */
+  /** 最近一次扫描结果，供 snapshot 同步读取。 */
   get current(): LocalUsageReport {
     return this.report
   }
@@ -539,12 +506,12 @@ export class SessionUsageStore {
     return this.report.available
   }
 
-  /** 实际使用的会话根目录（尚未探测出结果时返回第一个候选）。 */
+  /** 尚未探测出结果时返回第一个候选。 */
   get sessionsRoot(): string {
     return this.activeRoot?.dir ?? this.roots[0]?.dir ?? ''
   }
 
-  /** 增量刷新。并发调用共享同一次扫描。 */
+  /** 并发调用共享同一次扫描。 */
   async refresh(): Promise<LocalUsageReport> {
     if (this.inflight) return this.inflight
     this.inflight = this.scan().finally(() => {
@@ -554,9 +521,8 @@ export class SessionUsageStore {
   }
 
   /**
-   * 选定会话根目录：从候选列表里取**第一个真的能列出日志**的目录。
-   *
-   * 已经选定过就直接用（避免每次刷新都去 stat 一圈候选目录）。
+   * 选定会话根目录：从候选列表里取第一个真的能列出日志的目录。已经选定过就直接用
+   * （避免每次刷新都去 stat 一圈候选目录）。
    */
   private async pickRoot(): Promise<{ root: { label: string; dir: string }; listed: Awaited<ReturnType<typeof listSessionLogs>> } | { tried: string[] }> {
     const tried: string[] = []
@@ -581,7 +547,7 @@ export class SessionUsageStore {
         this.report = {
           ...this.report,
           available: false,
-          // 对外只给稳定的原因码；**候选目录的绝对路径只进日志**，不下发浏览器。
+          // 对外只给稳定的原因码；候选目录的绝对路径只进日志，不下发浏览器。
           reason: 'no-session-logs',
           days: [],
           totalFiles: 0,
@@ -640,8 +606,8 @@ export class SessionUsageStore {
         failures += 1
         const msg = e instanceof Error ? e.message : String(e)
         if (msg === 'zstd-unavailable') zstdFailures += 1
-        // 保底：这个文件读不了（超预算 / 结构损坏 / zstd 不可用）时保留上一次的
-        // 贡献，没有旧记录就跳过该文件 —— 单个坏日志不该让整个来源变不可用。
+        // 保底：这个文件读不了（超预算 / 结构损坏 / zstd 不可用）时保留上一次的贡献，没有旧
+        // 记录就跳过该文件 —— 单个坏日志不该让整个来源变不可用。
       }
     }
 
@@ -761,8 +727,8 @@ export class SessionUsageStore {
   /**
    * 从落盘 JSON 恢复。返回恢复的文件条数。
    *
-   * 只接受合法形状；坏缓存不该让插件起不来（与项目其它缓存同一约定）。
-   * 兼容没有 `models` 的旧缓存（那时只按供应商存）。
+   * 只接受合法形状；坏缓存不该让插件起不来（与项目其它缓存同一约定）。兼容没有 `models` 的
+   * 旧缓存（那时只按供应商存）。
    */
   load(data: unknown): number {
     const files = (data as { files?: unknown } | undefined)?.files
@@ -837,11 +803,9 @@ export class SessionUsageStore {
 }
 
 /**
- * token 合计（**不含** `REQUEST`）。
- *
- * `TOKEN_TYPES` 里包含请求数，但「总 Token」在这份代码里一贯等于
- * 输入 + 输出（见 `parser.toScopeStat`），所以这里必须把 `REQUEST` 排除，
- * 否则用量比较/排序会被请求数污染。
+ * token 合计（不含 `REQUEST`）：`TOKEN_TYPES` 里包含请求数，但「总 Token」在这份代码里一贯
+ * 等于输入 + 输出（见 `parser.toScopeStat`），所以这里必须把 `REQUEST` 排除，否则用量比较/
+ * 排序会被请求数污染。
  */
 export function tokenTotal(stat: Stat): number {
   return (

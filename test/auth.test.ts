@@ -1,7 +1,7 @@
 /**
- * 认证链路测试 —— 方案 D（复用 DSH 已登录账号的 Platform 会话凭据）。
+ * 认证链路测试 —— 复用 DSH 已登录账号的 Platform 会话凭据。
  *
- * 这些测试锁定的是「实测后」确立的三条不变量：
+ * 这些测试锁定的是三条不变量：
  *
  *  1. `readPlatformSessionToken()` 只读、只认 `getPlatformSession()`，
  *     并且**绝不**调用 `rejectToken()` —— 后者会移除本地登录态，用它处理

@@ -1,9 +1,6 @@
 /**
- * tlogs — 插件配置的解析与默认值。
- *
- * 对应需求第六章「配置」。配置通过 profile 的 cordis.patch.yml 注入，
- * 因此这里对每个字段都做防御式归一化：用户手写 YAML 时很容易写出
- * 越界值或错类型，插件必须能带着合理默认值继续工作。
+ * 插件配置的解析与默认值：配置由 profile 的 cordis.patch.yml 注入，用户手写 YAML 时很容易写出越界值或
+ * 错类型，因此这里的每个字段都做防御式归一化，保证插件能带着合理默认值继续工作。
  */
 
 import { homedir } from 'node:os'
@@ -12,83 +9,59 @@ import { join, resolve } from 'node:path'
 import { CACHE_TTL } from './store/cache.js'
 import { COMPACT_METRICS, type CompactMetric } from './types.js'
 
-/** 用户在 cordis.patch.yml 里可写的原始配置。 */
+/** 用户在 cordis.patch.yml 里可写的原始配置。字段语义与 `index.ts` 的 `Config` 一一对应。 */
 export interface TlogsConfig {
-  /** 手动指定 userToken（不推荐；优先使用自动获取）。 */
+  /** 不推荐手填；优先自动获取。 */
   platformUserToken?: string
-  /** 起始查询年（与 Python 默认一致：2024）。 */
   startYear?: number
-  /** 起始查询月（与 Python 默认一致：4）。 */
   startMonth?: number
-  /** 每次月度请求间隔（毫秒，对应 Python 的 time.sleep）。 */
+  /** 月度请求之间的间隔，毫秒。 */
   requestIntervalMs?: number
-  /**
-   * 缓存时长，单位**秒**（与需求 6.1 的示例一致：`total: 1800   # 30 分钟`）。
-   * 内部统一换算为毫秒。
-   */
+  /** 单位为秒，内部换算成毫秒。 */
   cacheTTL?: { total?: number; current?: number }
-  /** 内嵌组件默认是否展开。 */
   defaultExpanded?: boolean
-  /** 紧凑条展示哪些指标。 */
   compactMetrics?: CompactMetric[]
-  /** 是否启用详细面板。 */
   enableDetailView?: boolean
-  /** 数字格式：full（千分位）| short（K/M/B 缩写）。 */
+  /** full（千分位）| short（K/M/B 缩写）。 */
   numberFormat?: 'full' | 'short'
-  /** 缓存目录（对应 TLOGS_CACHE_DIR 环境变量）。 */
+  /** 默认取 TLOGS_CACHE_DIR，其次 `<DSH_HOME>/tlogs`。 */
   cacheDir?: string
-  /** 是否启用「当前项目消耗」卡片（P2，默认开启，不可用时自动降级）。 */
+  /** 宿主不提供会话用量时自动降级为不可用。 */
   enableProjectScope?: boolean
-  /** 是否允许把历史缓存落盘（默认开启；false 时完全不访问文件系统）。 */
+  /** false 时完全不访问文件系统。 */
   persistHistory?: boolean
   /**
-   * 定时自动刷新的间隔，单位**秒**（默认 300 = 5 分钟，0 = 关闭）。
-   *
-   * 注意它只决定「多久触发一次刷新」；单次刷新真正会打哪些月份仍由 `cacheTTL`
-   * 判定（当前范围 5 分钟、全量历史 30 分钟），因此不会每 5 分钟就把 31 个月全拉一遍。
+   * 单位秒，0 = 关闭。它只决定多久触发一次刷新；单次刷新真正会打哪些月份仍由 `cacheTTL` 判定，
+   * 所以不会每 5 分钟就把 31 个月全拉一遍。
    */
   autoRefreshSeconds?: number
-  /** 单个 tool 结果里最多返回多少行（防止把上下文塞爆）。 */
   maxToolRows?: number
   /**
-   * 是否把用量数字暴露给模型（注册 `query_token_usage` 工具）。
-   *
-   * **默认 false**：工具的返回值会进入模型上下文，也就是把你的用量统计作为
-   * 对话内容发送给模型提供方。默认不注册工具，数字只经 host→浏览器 RPC 进入
-   * 侧边栏 UI，模型完全看不到。需要「在对话里问用量」时才显式打开。
+   * 是否注册 `query_token_usage`。默认 false：工具返回值会作为对话内容发给模型提供方，
+   * 数字便只经 host→浏览器 RPC 进侧边栏 UI。
    */
   exposeUsageToModel?: boolean
   /**
-   * 是否允许复用 DSH 已登录账号的 Platform 会话凭据（方案 D）。
-   *
-   * 默认 true（零配置即可取数）。设为 false 后插件**完全不接触**
-   * `deepseekAccount` 服务：连可选注入都不会发起，只剩手工/环境变量/配置三条
-   * 显式来源。适合「只接受显式凭据」的最小权限诉求。
+   * 默认 true（零配置取数）。设 false 后插件完全不接触 `deepseekAccount`：连可选注入都不会发起，
+   * 只剩手工、环境变量、配置三条显式来源。
    */
   useAccountSession?: boolean
   /**
-   * 是否读取本机会话日志作为**第二路数据源**（默认 true）。
-   *
-   * 平台接口只覆盖 DeepSeek 官方通道，且当天数据要等平台结算（实测当天
-   * 北京时间 12:07 仍为 0）；非 DeepSeek 供应商（火山方舟/小米/GLM 等）平台
-   * 完全看不到。本机口径直接从 `$DSH_HOME/sessions/**` 的会话日志重建逐日用量，
-   * 实时且覆盖所有供应商，但只看得到本机。
-   *
-   * 设为 false 后插件**完全不读会话日志**（只在平台口径上工作），
-   * 适合「最小文件访问」的诉求 —— 代价是当天与非 DeepSeek 用量会缺失。
+   * 默认 true。平台接口只覆盖 DeepSeek 官方通道，且当天数据要等平台结算；非 DeepSeek 供应商
+   * （火山方舟 / 小米 / GLM 等）平台完全看不到。本机口径从 `<DSH_HOME>/sessions/**` 重建逐日用量，
+   * 实时且覆盖所有供应商，但只看得到本机。设 false 即完全不读会话日志，代价是当天与非 DeepSeek 用量会缺失。
    */
   localUsage?: boolean
-  /** 本机口径向前回溯的天数（默认 32，覆盖「近 30 天」窗口）。 */
+  /** 覆盖「近 30 天」窗口还留了 2 天余量。 */
   localUsageScanDays?: number
 }
 
-/** 归一化后的配置，所有字段必填（缓存时长为毫秒）。 */
+/** 归一化后的配置，所有字段必填（缓存时长已换算为毫秒）。 */
 export interface ResolvedConfig {
   platformUserToken: string
   startYear: number
   startMonth: number
   requestIntervalMs: number
-  /** 已换算为毫秒。 */
   cacheTTL: { total: number; current: number }
   defaultExpanded: boolean
   compactMetrics: CompactMetric[]
@@ -100,18 +73,11 @@ export interface ResolvedConfig {
   /** 定时自动刷新间隔（秒）；0 = 关闭。 */
   autoRefreshSeconds: number
   maxToolRows: number
-  /** 是否把用量数字暴露给模型（默认 false，见 TlogsConfig）。 */
   exposeUsageToModel: boolean
-  /** 是否复用 DSH 账号会话凭据（默认 true，见 TlogsConfig）。 */
   useAccountSession: boolean
-  /** 是否读取本机会话日志作为第二路数据源（默认 true，见 TlogsConfig）。 */
   localUsage: boolean
-  /** 本机口径回溯天数（默认 32，见 TlogsConfig）。 */
   localUsageScanDays: number
 }
-
-/** 合法的 scope 值集合。 */
-const SCOPES: readonly string[] = COMPACT_METRICS
 
 /** 把任意输入夹到整数区间内。 */
 function clampInt(v: unknown, min: number, max: number, fallback: number): number {
@@ -123,47 +89,36 @@ function clampInt(v: unknown, min: number, max: number, fallback: number): numbe
   return i
 }
 
+function nonEmpty(v: unknown): string | undefined {
+  return typeof v === 'string' && v.trim().length > 0 ? v.trim() : undefined
+}
+
+/** DSH 主目录：`$DSH_HOME`，缺省为当前工作目录。 */
+export function dshHome(env: (n: string) => string | undefined = (n) => process.env[n]): string {
+  return nonEmpty(env('DSH_HOME')) ?? '.'
+}
+
 /** 默认缓存目录：`$TLOGS_CACHE_DIR` 优先，否则 `<DSH_HOME>/tlogs`。 */
 export function defaultCacheDir(env: (n: string) => string | undefined = (n) => process.env[n]): string {
-  const explicit = env('TLOGS_CACHE_DIR')
-  if (explicit && explicit.trim().length > 0) return explicit.trim()
-  const base = dshHome(env)
-  return `${base.replace(/[\\/]+$/, '')}/tlogs`
+  return nonEmpty(env('TLOGS_CACHE_DIR')) ?? `${dshHome(env).replace(/[\\/]+$/, '')}/tlogs`
 }
 
-/** DSH 主目录：`$DSH_HOME`，缺省为当前工作目录（与上面同一约定）。 */
-export function dshHome(env: (n: string) => string | undefined = (n) => process.env[n]): string {
-  const home = env('DSH_HOME')
-  return home && home.trim().length > 0 ? home.trim() : '.'
-}
-
-/**
- * 会话日志根目录：`<DSH_HOME>/sessions`。
- *
- * 本机口径的数据源就在这个目录下（`<项目>/<会话>/session[.vN].jsonl[.zstd]`），
- * 与 DSH 自己写日志的位置一致；只读，不写入。
- */
+/** 会话日志根目录：`<DSH_HOME>/sessions`。只读，不写入。 */
 export function defaultSessionsDir(env: (n: string) => string | undefined = (n) => process.env[n]): string {
   return `${dshHome(env).replace(/[\\/]+$/, '')}/sessions`
 }
 
-/** 候选会话根目录（带可读标签，便于在日志/界面里说明「用的是哪一个」）。 */
+/** 候选会话根目录（带可读标签，便于在日志与界面里说明用的是哪一个）。 */
 export interface SessionsDirCandidate {
   label: string
   dir: string
 }
 
 /**
- * 列出**所有可能**的会话日志根目录，按优先级排序。
- *
- * 为什么需要候选列表（实测踩过）：`DSH_HOME` 在不同宿主里含义不同 ——
- *  - web / CLI：`DSH_HOME` 就是 DSH 主目录，会话在 `<DSH_HOME>/sessions`；
- *  - **桌面端（Electron）**：`DSH_HOME` 被指到 `<主目录>/profiles/<profile>`，
- *    而会话日志仍在 `<主目录>/sessions`（实测：`~/.dsh/profiles/desktop/sessions`
- *    不存在，`~/.dsh/sessions` 才有 121 个日志）。
- *
- * 于是只认 `<DSH_HOME>/sessions` 会让桌面端「本机口径」永远拿不到数据。
- * 这里给出候选列表，由 `SessionUsageStore` 取第一个真的能列出日志的目录。
+ * 列出所有可能的会话日志根目录，按优先级排序。`DSH_HOME` 在不同宿主里含义不同：web / CLI 下它就是
+ * DSH 主目录，会话在 `<DSH_HOME>/sessions`；桌面端下它被指到 `<主目录>/profiles/<profile>`，而会话
+ * 日志仍在 `<主目录>/sessions`。只认 `<DSH_HOME>/sessions` 会让桌面端的「本机口径」永远拿不到数据，
+ * 所以这里给出候选，由 `SessionUsageStore` 取第一个真能列出日志的。
  */
 export function sessionDirCandidates(
   env: (n: string) => string | undefined = (n) => process.env[n],
@@ -171,36 +126,31 @@ export function sessionDirCandidates(
 ): SessionsDirCandidate[] {
   const out: SessionsDirCandidate[] = []
   const push = (label: string, dir: string | undefined): void => {
-    if (!dir || dir.trim().length === 0) return
-    const abs = resolve(dir.trim())
+    const given = nonEmpty(dir)
+    if (!given) return
+    const abs = resolve(given)
     if (out.some((c) => c.dir === abs)) return
     out.push({ label, dir: abs })
   }
 
-  // 1) 显式覆盖优先。
+  // 显式覆盖优先。
   push('TLOGS_SESSIONS_DIR', env('TLOGS_SESSIONS_DIR'))
 
-  const dshHome = env('DSH_HOME')
-  if (dshHome && dshHome.trim().length > 0) {
-    const root = dshHome.trim()
-    // 2) web / CLI 形态。
+  const root = nonEmpty(env('DSH_HOME'))
+  if (root) {
     push('DSH_HOME/sessions', join(root, 'sessions'))
-    // 3) 桌面端形态：DSH_HOME = <主目录>/profiles/<profile>。
+    // 桌面端：DSH_HOME = <主目录>/profiles/<profile>，会话在主目录下。
     push('DSH_HOME 上两级/sessions', resolve(root, '..', '..', 'sessions'))
     push('DSH_HOME 上一级/sessions', resolve(root, '..', 'sessions'))
   }
 
-  // 4) 兜底：DSH 主目录的默认位置。
   push('~/.dsh/sessions', join(home, '.dsh', 'sessions'))
   return out
 }
 
 /**
- * 归一化配置。
- *
- * 默认值刻意与 Python 脚本保持一致：
- *  - startYear=2024 / startMonth=4（py:25-26）
- *  - requestIntervalMs=1000（py:29 REQUEST_INTERVAL = 1.0；需求建议 1–1.2s）
+ * 归一化配置。默认值与工作区权威 Python 脚本保持一致（起始 2024-04、请求间隔 1000ms），
+ * 这样逐月对拍不需要额外改配置。
  */
 export function resolveConfig(
   raw: TlogsConfig | undefined,
@@ -209,40 +159,34 @@ export function resolveConfig(
   const cfg = raw ?? {}
 
   const metrics = Array.isArray(cfg.compactMetrics)
-    ? cfg.compactMetrics.filter((m): m is CompactMetric => SCOPES.includes(m as string))
+    ? cfg.compactMetrics.filter((m): m is CompactMetric => COMPACT_METRICS.includes(m as CompactMetric))
     : []
 
   return {
-    platformUserToken: typeof cfg.platformUserToken === 'string' ? cfg.platformUserToken.trim() : '',
+    platformUserToken: nonEmpty(cfg.platformUserToken) ?? '',
     startYear: clampInt(cfg.startYear, 2024, 2100, 2024),
     startMonth: clampInt(cfg.startMonth, 1, 12, 4),
-    // 下限 0 允许测试/特殊环境关闭节流；上限 60s 防止用户写出离谱值。
+    // 下限 0 允许测试与特殊环境关闭节流；上限 60s 防止写出离谱值。
     requestIntervalMs: clampInt(cfg.requestIntervalMs, 0, 60_000, 1000),
     cacheTTL: {
-      // 配置以「秒」书写（需求 6.1），这里换算成毫秒；上限 24 小时。
+      // 配置以秒书写，这里换算成毫秒；上限 24 小时。
       total: clampInt(cfg.cacheTTL?.total, 0, 24 * 3600, CACHE_TTL.total / 1000) * 1000,
       current: clampInt(cfg.cacheTTL?.current, 0, 24 * 3600, CACHE_TTL.current / 1000) * 1000,
     },
     defaultExpanded: cfg.defaultExpanded === true,
-    // 缺省放「总计 + 今日」。
-    //
-    // 为什么金额**不在**默认值里：紧凑条只有侧边栏那么宽，四个指标（总/金额/今日/
-    // 请求）会把标签挤成碎片（实测截图：标签全部消失，只剩「8.9B · ¥678.87 ·
-    // ↖561M · ⚡2.4K」）。金额改在展开面板的卡片与「详细数据」里看。
+    // 缺省只放「总计 + 今日」：紧凑条只有侧边栏那么宽，指标一多标签就会被 flex
+    // 挤成看不清的碎片。金额改在展开面板的卡片与「详细数据」里看。
     compactMetrics: metrics.length > 0 ? metrics : ['total', 'today'],
     enableDetailView: cfg.enableDetailView !== false,
     numberFormat: cfg.numberFormat === 'full' ? 'full' : 'short',
-    cacheDir: typeof cfg.cacheDir === 'string' && cfg.cacheDir.trim().length > 0 ? cfg.cacheDir.trim() : defaultCacheDir(env),
+    cacheDir: nonEmpty(cfg.cacheDir) ?? defaultCacheDir(env),
     enableProjectScope: cfg.enableProjectScope !== false,
     persistHistory: cfg.persistHistory !== false,
-    // 默认 5 分钟；下限 0（关闭），上限 24 小时。
     autoRefreshSeconds: clampInt(cfg.autoRefreshSeconds, 0, 24 * 3600, 300),
     maxToolRows: clampInt(cfg.maxToolRows, 1, 200, 20),
-    // 默认关闭：工具的返回值就是模型上下文，默认不让用量数字离开本机。
+    // 默认关闭：工具的返回值就是模型上下文，不让用量数字自己离开本机。
     exposeUsageToModel: cfg.exposeUsageToModel === true,
-    // 默认开启：保持零配置取数；设 false 则连可选注入都不发起。
     useAccountSession: cfg.useAccountSession !== false,
-    // 默认开启：平台口径当天滞后且只覆盖 DeepSeek 通道，本机口径补上这两块。
     localUsage: cfg.localUsage !== false,
     // 「近 30 天」窗口 + 2 天余量；上限一年，防止日志扫描过重。
     localUsageScanDays: clampInt(cfg.localUsageScanDays, 2, 366, 32),

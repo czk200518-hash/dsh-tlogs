@@ -2,7 +2,7 @@
  * 宿主半侧集成测试。
  *
  * 验证「插件真的能被 DSH 加载并注册出正确的东西」，而不只是各函数单测通过：
- *  - `inject` 只声明必需服务（需求 5.3 权限最小化）
+ *  - `inject` 只声明必需服务（权限最小化）
  *  - `Config` 是 schemastery schema，能补默认值并且与 resolveConfig 的口径一致
  *  - `apply(ctx, config)` 会注册 `query_token_usage` 工具，且定义满足
  *    dsh-tools `register()` 的**真实校验规则**（已核对源码）：

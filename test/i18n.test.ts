@@ -118,7 +118,7 @@ test('跟随系统：读浏览器语言，识别不了就回退中文', () => {
   stubNavigator({ languages: ['en-US', 'en'], language: 'en-US' })
   assert.equal(detectSystemLang(), 'en')
 
-  // 不支持的语种 → 回退中文（需求：无法识别时回退中文）
+  // 不支持的语种 → 回退中文
   stubNavigator({ languages: ['ja-JP', 'ja'], language: 'ja-JP' })
   assert.equal(detectSystemLang(), 'zh')
 

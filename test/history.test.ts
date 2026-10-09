@@ -1,9 +1,9 @@
 /**
  * 缓存与历史存储单测。
  *
- * 覆盖需求 1.5（TTL：总消耗 30 分钟 / 当前 5 分钟）、
- * 需求 5.4（失败时用过期缓存兜底）、
- * 需求零.5（首次全量 + 后续只拉增量月份）。
+ * 覆盖 TTL 判定（总消耗 30 分钟 / 当前 5 分钟）、
+ * 失败时用过期缓存兜底、
+ * 首次全量 + 后续只拉增量月份。
  */
 
 import { test } from 'node:test'
@@ -110,7 +110,7 @@ test('getOrLoad：force 绕过新鲜缓存（手动刷新）', async () => {
   assert.equal(r.loaded, true)
 })
 
-test('getOrLoad：loader 失败时回退到过期缓存并标记 stale（需求 5.4）', async () => {
+test('getOrLoad：loader 失败时回退到过期缓存并标记 stale', async () => {
   let now = 0
   const cache = new TtlCache<number>(() => now)
   cache.write('k', 42)

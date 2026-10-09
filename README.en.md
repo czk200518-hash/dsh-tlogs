@@ -142,7 +142,7 @@ localUsage: false
 ## Development
 
 ```bash
-pnpm run check       # secret gate, i18n check, typecheck, build, tests
+pnpm run check       # secret gate, i18n check, comment gate, typecheck, build, tests
 pnpm run verify:dsh  # validate the plugin manifest with the local DSH parser
 pnpm run golden      # live end-to-end comparison; needs DEEPSEEK_PLATFORM_USER_TOKEN
 ```

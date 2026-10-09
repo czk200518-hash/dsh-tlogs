@@ -1,15 +1,11 @@
 /**
  * tlogs — 字典 part B（中文）：紧凑条、展开面板、图表、表格、格式化与错误兜底。
  *
- * 这里的键全部来自客户端的 UI 文案抽取；`dict/zh.ts` 会把本文件与 `zh-app.ts`
- * 合并成完整词典。**不要**在这里重复 part A 已有的键（如 `stat.*`、`common.*`）；
- * 代码里直接复用 part A 的键是允许且鼓励的（例如表格列头的「输入」就是 `stat.input`）。
- *
- * 键名约定：`<区域>.<名字>`，区域取 `bar.` / `panel.` / `chart.` / `table.` /
- * `money.` / `error.` 等；带插值的用 `{name}` 占位。
+ * 不要在这里重复 part A 已有的键（`stat.*`、`common.*`）—— 代码里直接复用 part A 的键
+ * 是允许的，比如表格列头的「输入」就是 `stat.input`。键名约定 `<区域>.<名字>`，
+ * 带插值的用 `{name}` 占位。
  */
 export const zhUi = {
-  // ---- 紧凑条（形态 A） ----
   'bar.title': 'tlogs — DeepSeek 用量',
   'bar.titleTokens': '{label} {value} tokens{note}',
   'bar.titleRequests': '{label} {value} 次请求{note}',
@@ -25,7 +21,6 @@ export const zhUi = {
   'bar.expand': '展开',
   'bar.collapse': '收起',
 
-  // ---- 展开面板（形态 B） ----
   'panel.timeBasis': '统计口径：平台日（UTC）· 北京 08:00 换日',
   'panel.dayBasis.utc': '平台接口的 days[] 按 UTC 日切桶；本机时区就是 UTC，所以本机 00:00 换日。{billing}',
   'panel.dayBasis.local':
@@ -75,7 +70,7 @@ export const zhUi = {
   'panel.sourceTip.other': '平台看不到的供应商：{list}',
   'panel.sourceTip.costPending': '金额是平台计价，当天结算滞后约 10~30 分钟，会略偏小',
 
-  // ---- 图表（面板的「图表」页签 + 三张图） ----
+  // 图表（面板的「图表」页签 + 三张图）
   'chart.range.all': '有史以来',
   'chart.range.custom': '自定义',
   'chart.range.today': '今日',
@@ -162,15 +157,13 @@ export const zhUi = {
   'chart.unit.requests': ' 次',
   'chart.unit.money': ' 元',
 
-  // ---- 统计表格 ----
   'table.name': '名称',
   'table.sortBy': '按{column}排序',
 
-  // ---- 金额格式化（中文按万 / 亿缩放） ----
+  // 金额格式化（中文按万 / 亿缩放）
   'money.shortBig': '亿',
   'money.shortSmall': '万',
 
-  // ---- 错误与兜底 ----
   'error.reason.notScanned': '尚未扫描',
   'error.reason.disabled': '配置里已关闭 localUsage',
   'error.reason.noSessionLogs': '未找到会话日志（候选目录都不存在）',
@@ -185,6 +178,6 @@ export const zhUi = {
   'error.noConnection': 'tlogs: 当前连接不支持 RPC（缺少 connection 服务）',
   'error.rpcFailed': 'tlogs: {endpoint} 调用失败',
 
-  // ---- 列表分隔符（供应商列表用「、」，英文用逗号） ----
+  // 列表分隔符（供应商列表用「、」，英文用逗号）
   'list.separator': '、',
 }

@@ -1,12 +1,12 @@
 /**
- * tlogs — 可排序的统计表格。
+ * tlogs — the sortable statistics table.
  *
- * 从原「内嵌详细视图」中抽出，现在作为详细数据弹窗（detail-modal.tsx）的表格页复用。
- * 本组件**不带**弹窗外壳，只负责表格本身（列可点排序、数字右对齐、完整值走 tooltip）。
+ * Shared by every table tab of the detail modal; it carries no modal shell of its own, just
+ * clickable column headers, right-aligned numbers and the exact value in a tooltip.
  *
- * 金额列（¥）是**按需出现**的：只有当这批行里有任意一行带金额时才渲染该列。
- * 理由：日历/历史里有大量「当期没花钱」的行，若无脑显示一列 ¥0.00，用户会以为
- * 插件算错了；而整列消失只说明「这批数据还没抓到金额」。
+ * The money column appears on demand, only when at least one row in the batch has a cost: an
+ * all-¥0.00 column would read as a bug, while a missing column only means the money has not
+ * been fetched yet.
  */
 
 import * as React from 'react'
@@ -16,10 +16,9 @@ import { useT, type MessageKey } from './i18n/index.js'
 import { moneyTotal } from '../types.js'
 import type { StatRow } from '../types.js'
 
-/** 表格可排序的列。 */
 type SortKey = 'label' | 'inputTokens' | 'outputTokens' | 'totalTokens' | 'requests' | 'cost'
 
-/** 每行的金额（元）；没有金额数据时返回 undefined。 */
+/** Row cost in CNY, or undefined when the row has no cost data. */
 function rowCost(r: StatRow): number | undefined {
   return r.stat.cost ? moneyTotal(r.stat.cost) : undefined
 }
@@ -35,7 +34,7 @@ function sortRows(rows: StatRow[], key: SortKey, dir: 'asc' | 'desc'): StatRow[]
 
 export interface StatTableProps {
   rows: StatRow[]
-  /** 空数据时的提示文案。 */
+  /** Text shown when there are no rows. */
   emptyText?: string
 }
 
@@ -49,8 +48,8 @@ export function StatTable(props: StatTableProps): React.ReactElement {
 
   const hasCost = rows.some((r) => rowCost(r) !== undefined)
   const columns: Array<{ key: SortKey; labelKey: MessageKey }> = React.useMemo(() => {
-    // 列头与日历汇总行、选中日明细用的是同一批词，直接复用 part A 的 `stat.*`，
-    // 免得同一句话在字典里出现两份。
+    // Part A's `stat.*` keys are reused, the same wording as the calendar summary and the
+    // selected-day detail, so no sentence lands in the dictionary twice.
     const base: Array<{ key: SortKey; labelKey: MessageKey }> = [
       { key: 'label', labelKey: 'table.name' },
       { key: 'inputTokens', labelKey: 'stat.input' },
@@ -58,7 +57,7 @@ export function StatTable(props: StatTableProps): React.ReactElement {
       { key: 'totalTokens', labelKey: 'stat.totalTokens' },
       { key: 'requests', labelKey: 'stat.requests' },
     ]
-    // 金额放最后一列：它是「补充信息」，指标列应保持原有的阅读顺序。
+    // Money goes last: it is supplementary, and the metric columns keep their reading order.
     if (hasCost) base.push({ key: 'cost', labelKey: 'stat.cost' })
     return base
   }, [hasCost])
@@ -99,8 +98,8 @@ export function StatTable(props: StatTableProps): React.ReactElement {
             return (
               <tr key={r.key}>
                 <td title={r.label}>
-                  {/* 平台层级徽标：官方 / 第三方。火山方舟上跑的也是 deepseek-* 模型，
-                      所以必须按**通道**标注，不能靠模型名判断。 */}
+                  {/* Platform badge (official / third party). The channel decides this, not the
+                      model name: Volcengine runs deepseek-* models too. */}
                   {r.tag ? (
                     <span className="tlogs-src tlogs-src-inline" title={r.tagTitle ?? r.tag}>
                       {r.tag}

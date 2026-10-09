@@ -1,14 +1,14 @@
 /**
  * 内嵌挂载 / 卸载 / 交互测试。
  *
- * 这是本插件 UI 侧最强的自动化证据，覆盖验收 7.1 与 7.3：
+ * 这是本插件 UI 侧最强的自动化证据：
  *  - bundle 以包名注册，且只 require 平台种子表里的 react（自包含）
  *  - `apply(ctx)` 把组件注册到 `sidebar.footer.action` 席位（带 id 与 inject share）
  *  - 组件真的能渲染出紧凑条与数据
  *  - 点击展开按钮后面板**就地展开**（同一容器内新增面板，不新窗口、不弹 Modal）
  *  - 点击「详细数据」切到详细视图，再点「返回」回到面板
  *  - 卸载后组件 DOM 被清理干净
- *  - 插件作用域销毁后注入的 <style> 被移除（需求 7.5「不残留 DOM 节点」）
+ *  - 插件作用域销毁后注入的 <style> 被移除（不残留 DOM 节点）
  *
  * 注意：真实 slot 渲染器会把注册项的 `inject` share 合并进组件 props，
  * 因此这里的 `mount()` 也照做 —— 否则 rpc 注入缺失，测的就不是真实行为。
@@ -307,7 +307,7 @@ test('apply 注入 <style> 并在销毁时移除（不残留 DOM）', () => {
   assert.ok(tag, '应注入样式表')
   assert.equal(tag.getAttribute('data-plugin'), 'tlogs', '应打上 data-plugin 以便模块系统回收')
   assert.ok(tag.textContent && tag.textContent.includes('tlogs-compact'), '样式内容应包含组件类名')
-  // 需求 1.1：内嵌部分（紧凑条 / 展开面板）不得用 position: fixed/absolute 伪造悬浮。
+  // 内嵌部分（紧凑条 / 展开面板）不得用 position: fixed/absolute 伪造悬浮。
   // 例外：详细数据**弹窗**的遮罩与对话框 —— 弹窗本来就该是浮层，否则窄侧边栏里
   // 放不下日历与表格。这里把内嵌部分单独切出来断言，避免例外把整条规则废掉。
   const cssText = tag.textContent ?? ''
@@ -539,12 +539,12 @@ test('渲染紧凑条，点击展开后就地展开面板，可进入详细视�
       await new Promise((r) => setTimeout(r, 0))
     })
 
-    // 需求 1.2：就地展开（同一容器内新增面板），而不是新窗口/Modal
+    // 就地展开（同一容器内新增面板），而不是新窗口/Modal
     assert.ok(q('.tlogs-panel'), '展开后应出现面板')
     assert.equal(doc().querySelectorAll('.tlogs-panel').length, 1, '面板必须在同一容器内')
     assert.equal(doc().querySelector('[role="dialog"]'), null, '不得使用 Modal 覆盖层')
 
-    // 需求 1.3：五张卡片
+    // 五张卡片
     const cards = container.querySelectorAll('.tlogs-card')
     assert.equal(cards.length, 5, `应渲染五张卡片，实际 ${cards.length}`)
     for (const label of ['总消耗 Token', '当前项目消耗', '今日消耗', '当周消耗', '当月消耗']) {
@@ -801,7 +801,7 @@ test('侧边栏收起时只显示图标（wide=false）', async () => {
   }
 })
 
-test('token 失效时面板顶部提示重新登录（需求 2.4 / 5.2）', async () => {
+test('token 失效时面板顶部提示重新登录', async () => {
   const client = loadClientBundle()
   const snapshot = snapshotFixture({
     auth: { status: 'invalid', message: '401 认证失败（userToken 失效）' },
@@ -837,7 +837,7 @@ test('token 失效时面板顶部提示重新登录（需求 2.4 / 5.2）', asyn
   }
 })
 
-test('数据可能过期时紧凑条显示角标（需求 5.4）', async () => {
+test('数据可能过期时紧凑条显示角标', async () => {
   const client = loadClientBundle()
   const snapshot = snapshotFixture({ stale: true, error: 'HTTP 500: oops' })
   const { ctx, registrations } = makeCtx(snapshot)

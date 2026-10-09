@@ -1,13 +1,10 @@
 /**
- * tlogs — 内嵌容器（紧凑条 / 展开面板 在同一容器内切换）。
+ * tlogs — the embedded container that switches between the compact bar and the expand panel.
  *
- * 需求 1.1：组件通过 DSH 的 slot 扩展点注册到侧边栏页脚，
- * **紧凑条与展开面板**完全在文档流内，不使用 position: fixed / absolute 伪造悬浮。
- * 需求 1.2：展开时把上方内容顶上去（就地撑开），不覆盖。
- *
- * 「详细数据」改为打开**弹窗**（detail-modal.tsx）：侧边栏太窄，表格与日历都需要
- * 横向空间。弹窗是真正意义上的浮层，因此它使用 fixed —— 这是对需求 1.1 唯一且
- * 有意的偏离（需求原文写的是「不弹 Modal」），已在 README 记录。
+ * Both states stay in normal document flow: expanding pushes the content above upwards instead
+ * of covering it, so neither uses position: fixed/absolute. The detail view is a real modal
+ * (detail-modal.tsx) and does use fixed — the single deliberate exception to the in-flow rule,
+ * because the sidebar is too narrow for the tables and the calendar.
  */
 
 import * as React from 'react'
@@ -19,9 +16,9 @@ import { useTlogs } from './store.js'
 import type { Rpc } from './api.js'
 
 export interface TlogsFooterProps {
-  /** 侧边栏是否为展开态（由 slot owner 传入，见 ui-sidebar 的 renderSlot 调用）。 */
+  /** Whether the sidebar is wide (passed by the slot owner, ui-sidebar's renderSlot). */
   wide?: boolean
-  /** 由 slot 的 inject share 注入。 */
+  /** Provided by the slot's inject share. */
   rpc?: Rpc
   numberFormat?: 'full' | 'short'
   enableDetailView?: boolean
@@ -37,12 +34,11 @@ export function TlogsFooter(props: TlogsFooterProps): React.ReactElement {
   const [view, setView] = React.useState<View>(defaultExpanded ? 'expanded' : 'compact')
   const [detailOpen, setDetailOpen] = React.useState(false)
 
-  /** 用户是否手动切换过形态；一旦切换就不再套用 host 下发的默认值。 */
   const userToggled = React.useRef(false)
   const defaultApplied = React.useRef(false)
 
-  // 客户端读不到插件自身的 cordis 配置（DSH 的浏览器半侧 apply(ctx, config)
-  // 拿到的 config 是 undefined），因此展示配置由 host 通过 snapshot.display 下发。
+  // The client cannot read the plugin's own cordis config (the browser-side apply(ctx, config)
+  // sees config as undefined), so display config arrives via snapshot.display.
   React.useEffect(() => {
     if (defaultApplied.current || userToggled.current) return
     const d = store.snapshot?.display
@@ -64,7 +60,7 @@ export function TlogsFooter(props: TlogsFooterProps): React.ReactElement {
     userToggled.current = true
     if (view === 'compact') {
       setView('expanded')
-      // 需求 1.5：展开面板时再刷新一次（受缓存 TTL 约束，不一定真的发请求）。
+      // Expanding asks for a refresh; the host's cache TTL may absorb it.
       void store.refresh(false)
     } else {
       setView('compact')
@@ -75,7 +71,8 @@ export function TlogsFooter(props: TlogsFooterProps): React.ReactElement {
     void store.refresh(true)
     if (detailOpen) {
       void store.loadDetail()
-      // 图表数据也重取：手动刷新后项目快照会更新，累计曲线与卡片才对得上。
+      // The chart is refetched too: a manual refresh updates the project snapshots, and the
+      // cumulative curve has to match the cards.
       void store.reloadSeries()
     }
   }

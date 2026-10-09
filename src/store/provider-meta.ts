@@ -1,24 +1,12 @@
 /**
- * tlogs — 供应商（通道）元数据：**这个模型是官方平台的，还是第三方平台的**。
+ * tlogs — 供应商（通道）元数据：这个模型走的是官方平台还是第三方平台。
  *
- * ## 为什么不能按模型名判断
- *
- * 用户实测的疑问点：火山方舟（`huoshanfangzhou`）上跑的就是 `deepseek-v4-flash`，
- * 小米 / 智谱 / Kimi / 通义千问 也各有自己的模型。所以「是不是 DeepSeek 模型」和
- * 「是不是官方平台」是**两件事**：
- *
- * | 通道（provider） | 平台 | 例 |
- * |---|---|---|
- * | `deepseek-official` | **官方**：DeepSeek 开放平台（用 API Key/账单口径） | deepseek-flash |
- * | `deepseek-account` | **官方**：DSH 账号登录态（用量同样进平台账单） | deepseek-flash |
- * | `huoshanfangzhou` | **第三方**：火山方舟 | **deepseek-v4-flash** ← 名字是 DeepSeek，平台是第三方 |
- * | `xiaomi` / `zai` / `moonshot` / `qwen` … | **第三方** | mimo / glm / kimi / qwen |
- *
- * 判定一律按 **provider（通道）**，绝不按模型名 —— 否则火山方舟上的 DeepSeek 模型
- * 会被误标成「官方」，而平台账单里根本没有它。
+ * 不能按模型名判断：火山方舟的 `huoshanfangzhou` 通道上跑的就是 `deepseek-v4-flash`，平台
+ * 账单里根本没有它。官方只有 `deepseek-official`（API Key/账单口径）与 `deepseek-account`
+ * （DSH 账号登录态，用量同样进平台账单）两条通道；其余（`huoshanfangzhou`、`xiaomi`、`zai`、
+ * `moonshot`、`qwen` …）一律算第三方。所以判定只看 provider 名字，绝不看模型名。
  */
 
-/** 平台层级。 */
 export type ProviderTier = 'official' | 'third-party'
 
 /** 层级的展示文案。 */
@@ -30,14 +18,14 @@ export const TIER_LABEL: Record<ProviderTier, string> = {
 /**
  * 官方通道判定：provider 形如 `deepseek` / `deepseek-official` / `deepseek-account`。
  *
- * 与 `store/usage-merge.ts` 的 `isDeepseekProvider` 同一口径（那边用于合并取大，
- * 这边用于展示标注），两处必须一致。
+ * 与 `store/usage-merge.ts` 的 `isDeepseekProvider` 必须同一口径 —— 那边用于合并取大，这边用于
+ * 展示标注，两处不一致就会出现「数字来自 A、徽标写着 B」。
  */
 export function providerTier(provider: string): ProviderTier {
   return /^deepseek([-_.]|$)/i.test(provider.trim()) ? 'official' : 'third-party'
 }
 
-/** 已知通道的中文名；未收录的原样返回（宁可显示路由 id，也不要瞎猜）。 */
+/** 已知通道的中文名；没收录的原样返回（宁可显示路由 id，也不要瞎猜）。 */
 const PROVIDER_LABELS: Record<string, string> = {
   'deepseek-official': 'DeepSeek 开放平台',
   'deepseek-account': 'DSH 账号（官方）',

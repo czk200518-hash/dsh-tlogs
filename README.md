@@ -142,7 +142,7 @@ localUsage: false
 ## 开发
 
 ```bash
-pnpm run check       # 密钥闸门、文案外置校验、typecheck、build、测试
+pnpm run check       # 密钥闸门、文案外置校验、注释闸门、typecheck、build、测试
 pnpm run verify:dsh  # 用本机 DSH 解析器校验插件声明
 pnpm run golden      # 在线端到端对拍，需要 DEEPSEEK_PLATFORM_USER_TOKEN
 ```
