@@ -81,8 +81,6 @@ desktop profile 不能用 CLI 安装，改用 设置 → 插件 → 安装；其
 
 ## 配置
 
-完整模板见 [cordis.patch.yml](cordis.patch.yml)。
-
 | 配置 | 默认 | 说明 |
 | --- | --- | --- |
 | `exposeUsageToModel` | `false` | 注册对话内查询工具 |
