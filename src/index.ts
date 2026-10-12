@@ -15,6 +15,7 @@ import { ProjectHistoryStore } from './store/project-history.js'
 import { SessionUsageStore } from './store/session-usage.js'
 import { JsonFileCache } from './store/persist.js'
 import { TokenManager, redactToken } from './auth/token-manager.js'
+import { readPlatformBalance, type AccountBalanceService } from './auth/account-balance.js'
 import { createCredentialStore } from './auth/credentials-store.js'
 import { canInteractiveLogin, interactiveLogin, readPlatformSessionToken } from './auth/desktop-login.js'
 import { UsageService, type Logger, type ProjectUsageProvider } from './service.js'
@@ -125,10 +126,10 @@ export function apply(ctx: TlogsHostContext, rawConfig?: TlogsConfig): void {
   const secrets = createCredentialStore(() => optionalService(ctx, 'credentials') as never, logger)
 
   // 复用 DSH 已登录账号的 Platform 会话凭据（零配置）。deepseekAccount 必须用可选注入拿：web 版没有该服务，
-  // 写进 `export const inject` 会变成加载前置条件。拿到服务后立刻收窄成只暴露一个方法的 facade：那个服务上
-  // 还有 signOut() / rejectToken() 这类会移除本地登录态的破坏性方法，只留 getPlatformSession 才能把
-  // 「本插件不会调用它们」从口头约定变成结构上的不可能。
-  let accountSession: { getPlatformSession: () => Promise<unknown> } | undefined
+  // 写进 `export const inject` 会变成加载前置条件。拿到服务后立刻收窄成一个方法白名单 facade：只看
+  // `getPlatformSession`（凭据，零配置取数）与 `getBalance`（钱包余额，令牌由宿主自己投递）；那个服务上还有
+  // signOut() / rejectToken() 这类会移除本地登录态的破坏性方法，不在白名单里就意味着结构上不可达。
+  let accountSession: AccountBalanceService & { getPlatformSession: () => Promise<unknown> } | undefined
   if (!resolved.useAccountSession) {
     logger.info?.(
       'tlogs: 已按配置禁用账号会话凭据（useAccountSession: false）；' +
@@ -137,15 +138,25 @@ export function apply(ctx: TlogsHostContext, rawConfig?: TlogsConfig): void {
   } else if (typeof ctx.inject === 'function') {
     try {
       ctx.inject(['deepseekAccount'], (acctCtx) => {
-        accountSession = {
-          getPlatformSession: () => {
-            const svc = optionalService(acctCtx, 'deepseekAccount') as Record<string, unknown> | undefined
-            const fn = svc?.['getPlatformSession']
-            if (typeof fn !== 'function') return Promise.resolve(undefined)
-            return (fn as (this: unknown) => Promise<unknown>).call(svc)
-          },
+        // 服务对象在注入回调里取一次并闭包持有，白名单就是这里写下的两个函数。
+        const svc = optionalService(acctCtx, 'deepseekAccount') as Record<string, unknown> | undefined
+        const method = (name: string): ((...args: unknown[]) => Promise<unknown>) | undefined => {
+          const fn = svc?.[name]
+          return typeof fn === 'function'
+            ? (...args: unknown[]) => (fn as (...a: unknown[]) => Promise<unknown>).apply(svc, args)
+            : undefined
         }
-        logger.info?.('tlogs: 已接入 deepseekAccount（已收窄为只读的 getPlatformSession）')
+        const session = method('getPlatformSession')
+        const balance = method('getBalance')
+        if (!session && !balance) {
+          logger.warn?.('tlogs: deepseekAccount 上既没有 getPlatformSession 也没有 getBalance，已跳过接入')
+          return
+        }
+        accountSession = {
+          getPlatformSession: () => (session ? session() : Promise.resolve(undefined)),
+          ...(balance ? { getBalance: (client) => balance(client) } : {}),
+        }
+        logger.info?.('tlogs: 已接入 deepseekAccount（方法白名单：getPlatformSession / getBalance）')
       })
     } catch (e) {
       logger.warn?.(`tlogs: 接入 deepseekAccount 失败：${e instanceof Error ? e.message : String(e)}`)
@@ -220,6 +231,10 @@ export function apply(ctx: TlogsHostContext, rawConfig?: TlogsConfig): void {
 
   const projectProvider: ProjectUsageProvider = createProjectProvider(ctx, logger)
 
+  // 定时器允许被注入，测试据此验证「5 秒一次」与「收起后真的停」而不必真等 5 秒；
+  // 生产路径上 `apply` 的第二个参数来自 profile 配置，不会带这两个键，于是走 service 的全局兜底。
+  const injectedTimers = rawConfig as { setInterval?: unknown; clearInterval?: unknown } | undefined
+
   const service = new UsageService({
     config: resolved,
     history,
@@ -235,6 +250,14 @@ export function apply(ctx: TlogsHostContext, rawConfig?: TlogsConfig): void {
     projectProvider,
     ...(localUsage ? { localUsage } : {}),
     onChanged: () => scheduleSave(),
+    // 余额的独立通道：宿主账号服务自己投递授权令牌，本插件既不接触凭据也不需要租约。
+    accountBalance: () => readPlatformBalance({ service: accountSession, logger }),
+    ...(typeof injectedTimers?.setInterval === 'function'
+      ? { setInterval: injectedTimers.setInterval as (fn: () => void, ms: number) => unknown }
+      : {}),
+    ...(typeof injectedTimers?.clearInterval === 'function'
+      ? { clearInterval: injectedTimers.clearInterval as (handle: unknown) => void }
+      : {}),
     // 客户端据此把「登录」按钮置灰：桌面端的插件宿主创建不了 BrowserWindow，
     // 登录窗口从来就打不开。
     loginAvailable: () => canInteractiveLogin(),
@@ -291,6 +314,9 @@ export function apply(ctx: TlogsHostContext, rawConfig?: TlogsConfig): void {
     }
     logger.info?.(`tlogs: 已启用定时自动刷新，间隔 ${resolved.autoRefreshSeconds}s`)
   }
+
+  // 余额轮询由展开面板开关，但卸载时兜底停掉：宿主销毁插件作用域后不该还有定时器在跑。
+  ctx.effect?.(() => () => service.dispose(), 'tlogs: balance watch dispose')
 
   const handle = makeRpcHandler({
     service,

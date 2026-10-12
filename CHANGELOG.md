@@ -4,6 +4,26 @@
 
 ## 未发布
 
+### 余额改为独立的高频通道（5 秒，仅展开面板可见时）
+
+余额不再只跟着用量刷新走。展开面板打开时，宿主按 5 秒一次查询账号余额，收起即停；
+余额与「官方累计消费」在同一行显示，但取自两条不同节奏的通道。
+
+- 取数走 `deepseekAccount.getBalance()`，令牌由宿主自己持有并投递，本插件既不接触凭据、
+  也不需要凭据租约（`useAccountSession: false` 时这条通道整个不存在）。
+- `deepseekAccount` 的接入从「只留 `getPlatformSession`」扩成一个**方法白名单**：
+  `getPlatformSession` + `getBalance`。`signOut()` / `rejectToken()` 一类会移除本地登录态的
+  方法依旧结构上不可达。
+- 请求头所需的界面身份（`x-client-version` / `x-client-locale` / `x-client-timezone-offset`）
+  取自本插件 `package.json` 的版本、进程语言与真实 UTC 偏移；拿不到包版本就不发这次查询，
+  而不是编一个版本号冒充某个构建。
+- 「官方累计消费」（`total_costs`）只有 `get_user_summary` 给得出，因此仍随刷新周期更新，
+  且不会被高频通道的余额结果抹掉（两个来源在快照里合并成一行）。
+- 查询失败只表现为「这一格暂时不更新」：保留上一次的余额，不清零、不报错。
+- 开关由展开面板驱动（`tlogs.balanceWatch`），面板卸载时兜底停表；没人看着时不产生任何请求。
+- 质量门全绿：`verify:secrets`（180 文件）、`verify:i18n`、`verify:comments`（18.6% ≤ 19%）、
+  `typecheck`、`build`、257 项测试（255 通过 / 2 跳过，跳过项为需要外部 Python 的 golden）。
+
 ### 整理：源码表述层重写（行为零变化）
 
 对 `src/**` 做了一次纯表述层整理，目标是去掉注释里的「考古味」，不改任何行为：

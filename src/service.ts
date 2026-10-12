@@ -76,6 +76,22 @@ export interface ProjectOption {
   stat: ScopeStat
 }
 
+/** 账号钱包余额（不含官方累计消费，那项只有 `get_user_summary` 给得出）。 */
+export interface AccountBalance {
+  balance: number
+  bonusBalance: number
+  currency: string
+}
+
+/**
+ * 余额的高频取数通道，由宿主账号服务提供（`auth/account-balance.ts` 是它的实现）。
+ * 它与平台凭据无关：宿主自己持有并投递令牌，本插件既不接触凭据也不需要凭据租约。
+ */
+export type AccountBalanceReader = () => Promise<AccountBalance | undefined>
+
+/** 余额查询节奏（毫秒）。展开面板打开时才跑，收起即停。 */
+export const BALANCE_POLL_INTERVAL_MS = 5000
+
 /** 「当前项目消耗」的数据来源；宿主不提供时整体降级为不可用。 */
 export interface ProjectUsageProvider {
   available(): boolean
@@ -124,6 +140,13 @@ export interface UsageServiceOptions {
   localUsage?: SessionUsageStore
   /** 客户端据此决定「登录」按钮是否可点。 */
   loginAvailable?: () => boolean
+  /**
+   * 余额的独立取数通道。宿主没有账号服务时缺省，界面就只剩刷新周期带回来的余额。
+   */
+  accountBalance?: AccountBalanceReader
+  /** 定时器可注入，便于测试验证轮询节奏与「收起后真的停」。 */
+  setInterval?: (fn: () => void, ms: number) => unknown
+  clearInterval?: (handle: unknown) => void
 }
 
 /** 一次刷新的原因，决定 TTL 判定。 */
@@ -152,6 +175,15 @@ export class UsageService {
   private lastCurrentAt = 0
   /** 平台账户概览；取不到时 undefined。 */
   private account: AccountSummary | undefined
+  /**
+   * 余额独立通道最近一次成功的结果。与 `account` 分开存：`account` 每轮刷新整体覆盖，
+   * 而余额比它新得多，合并时必须让余额压过刷新带回来的那个旧值。
+   */
+  private balance: AccountBalance | undefined
+  /** 上一次余额查询还在路上时跳过本轮，避免慢请求堆叠成并发查询。 */
+  private balancePolling = false
+  /** 余额轮询定时器；未在轮询时为 undefined。 */
+  private balanceTimer: unknown
   /** 由 `usage/cost` 带回。 */
   private currencyCode = 'CNY'
   /** 同一时刻只允许一个刷新在跑。 */
@@ -452,7 +484,73 @@ export class UsageService {
     }
   }
 
-  /** 刷新平台账户概览（余额 / 官方累计消费）。失败静默降级。 */
+  /**
+   * 按用户的节奏查一次余额。刻意不进凭据租约：`getBalance()` 的令牌由宿主自己持有并投递，
+   * 本插件在这条路上没有任何东西要索取；挂上租约只会让每 5 秒都去 `getPlatformSession` 借一次
+   * 会话凭据 —— 那正是租约制要避免的常驻/高频索取（有回归测试守着这一点）。5 秒一次换来的是
+   * 请求量，不是暴露面。
+   */
+  private async pollBalance(): Promise<void> {
+    const read = this.opts.accountBalance
+    if (!read || this.balancePolling) return
+    this.balancePolling = true
+    try {
+      const next = await read()
+      if (!next) {
+        this.log('warn', 'tlogs: 余额查询无结果（未登录、宿主未提供账号服务或查询失败）')
+        return
+      }
+      this.balance = next
+    } catch (e) {
+      this.log('warn', `tlogs: 余额查询异常 —— ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      this.balancePolling = false
+    }
+  }
+
+  /**
+   * 开关余额轮询，并返回开关后的快照。由展开面板驱动：打开即启动并立刻查一次（面板刚出现
+   * 时不能等 5 秒才显示正确的余额），收起即停 —— 所以没人看着的时候这条通道完全不产生请求。
+   */
+  async balanceWatch(on: boolean): Promise<UsageSnapshot> {
+    if (on) await this.startBalanceWatch()
+    else this.stopBalanceWatch()
+    return this.snapshot()
+  }
+
+  private async startBalanceWatch(): Promise<void> {
+    // 没有可用的取数通道（未接入账号服务 / 被配置关掉）就不起定时器：空转的轮询只会
+    // 每 5 秒写一条「无结果」日志。
+    if (!this.opts.accountBalance) return
+    const already = this.balanceTimer !== undefined
+    if (!already) {
+      const tick = () => {
+        void this.pollBalance()
+      }
+      const timer = (this.opts.setInterval ?? ((fn, ms) => setInterval(fn, ms)))(tick, BALANCE_POLL_INTERVAL_MS)
+      // 即便调用方漏了 dispose，定时器也不该拖住宿主进程退出。
+      ;(timer as { unref?: () => void } | undefined)?.unref?.()
+      this.balanceTimer = timer
+    }
+    // 已启动时只补一次查询：否则 5 秒窗口内的每一次重新展开都会在原有节奏上再叠一发。
+    await this.pollBalance()
+  }
+
+  private stopBalanceWatch(): void {
+    const timer = this.balanceTimer
+    if (timer === undefined) return
+    this.balanceTimer = undefined
+    ;(this.opts.clearInterval ?? ((h: unknown) => clearInterval(h as NodeJS.Timeout)))(timer)
+  }
+
+  /** 取消所有定时器（插件卸载时由 host 入口调用）。 */
+  dispose(): void {
+    this.stopBalanceWatch()
+  }
+
+  /**
+   * 刷新平台账户概览（余额 / 官方累计消费）。失败静默降级。
+   */
   private async refreshAccount(
     token: string,
     headers: Record<string, string> | undefined,
@@ -904,7 +1002,7 @@ export class UsageService {
       error: this.lastError?.message,
       costComplete: report.costComplete,
       currency: this.currencyCode,
-      ...(this.account ? { account: this.account } : {}),
+      ...this.accountForSnapshot(),
       ...(this.config.localUsage
         ? {
             localUsage: {
@@ -922,6 +1020,25 @@ export class UsageService {
         enableDetailView: this.config.enableDetailView,
         defaultExpanded: this.config.defaultExpanded,
         loginAvailable: this.opts.loginAvailable?.() ?? false,
+      },
+    }
+  }
+
+  /**
+   * 下发给界面的账号行。两个来源合并成一份：余额取独立通道那一次（它新得多），
+   * 官方累计消费只能来自刷新周期带回的 `account`。只有一边有数据时也要出这一行 ——
+   * 否则「还没刷新过、但余额通道已经拿到数」的窗口期里，界面上会连余额都不显示。
+   */
+  private accountForSnapshot(): { account?: AccountSummary } {
+    const balance = this.balance ?? this.account
+    const totalCosts = this.account?.totalCosts
+    if (!balance && totalCosts === undefined) return {}
+    return {
+      account: {
+        balance: balance?.balance ?? 0,
+        bonusBalance: balance?.bonusBalance ?? 0,
+        currency: balance?.currency ?? this.account?.currency ?? this.currencyCode,
+        ...(totalCosts === undefined ? {} : { totalCosts }),
       },
     }
   }

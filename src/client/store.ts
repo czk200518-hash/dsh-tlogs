@@ -54,6 +54,9 @@ export interface TlogsStore {
   loadSeries: (query: SeriesQuery) => Promise<void>
   /** Replay the last chart query (refresh button, idle polling). */
   reloadSeries: () => Promise<void>
+  /** Poll account balance while the caller is visible; `false` stops the loop. */
+  balanceWatch: (on: boolean) => Promise<void>
+  /** Manual refresh: bypasses the cache TTL. */
   setToken: (token: string) => Promise<boolean>
   logout: () => Promise<void>
   login: () => Promise<boolean>
@@ -78,6 +81,8 @@ export function useTlogs(rpc: Rpc | undefined, initialReason: 'mount' | 'expand'
   /** Sequence of chart requests; only the newest result is accepted, so fast range switches cannot mix data. */
   const seriesSeq = React.useRef(0)
   const lastSeriesQuery = React.useRef<SeriesQuery | null>(null)
+  /** Latest `balanceWatch` decision: a poll that lands after the caller hid itself is discarded. */
+  const balanceSeq = React.useRef(0)
 
   React.useEffect(() => {
     alive.current = true
@@ -197,6 +202,28 @@ export function useTlogs(rpc: Rpc | undefined, initialReason: 'mount' | 'expand'
     return () => clearInterval(timer)
   }, [reload, reloadSeries])
 
+  /**
+   * Toggle the host's balance loop. Turning it on applies the snapshot the host just took, so the
+   * panel does not render a stale balance for a whole poll interval; turning it off bumps the
+   * sequence so an in-flight response cannot write a later panel's numbers.
+   */
+  const balanceWatch = React.useCallback(
+    async (on: boolean): Promise<void> => {
+      const seq = ++balanceSeq.current
+      try {
+        const s = await callRpc<UsageSnapshot>(rpc, RPC.balanceWatch, { on })
+        if (alive.current && on && seq === balanceSeq.current) {
+          setSnapshot(s)
+          setError(null)
+        }
+      } catch (e) {
+        // The balance channel is additive: a failure leaves the refresh-scoped balance on screen.
+        if (alive.current && on && seq === balanceSeq.current) setError(messageOf(e))
+      }
+    },
+    [rpc],
+  )
+
   const setToken = React.useCallback(
     async (token: string): Promise<boolean> => {
       try {
@@ -253,6 +280,7 @@ export function useTlogs(rpc: Rpc | undefined, initialReason: 'mount' | 'expand'
     loadMonth,
     loadSeries,
     reloadSeries,
+    balanceWatch,
     setToken,
     logout,
     login,

@@ -377,19 +377,22 @@ export function ExpandPanel(props: ExpandPanelProps): React.ReactElement {
         {snapshot === null ? <div className="tlogs-empty">{t('common.loading')}</div> : null}
       </div>
 
-      {/* Platform account overview: balance and the official bill's cumulative spend. The card
-          ¥ is recomputed from `usage/cost`, so it differs from the official number by a rounding
-          hair; showing both lets the user tell a real miscalculation from a precision difference. */}
+      {/* Platform account overview: balance and the official bill's cumulative spend. The two
+          numbers come from different cadences — the balance has its own fast channel while the
+          cumulative spend only comes back with a refresh — so either may be absent, and the card
+          ¥ is recomputed from `usage/cost` (hence the rounding hair against the official number). */}
       {snapshot?.account ? (
         <div className="tlogs-account">
           <span title={t('panel.account.balanceTip')}>
             {t('panel.account.balance')}
             <b>{formatMoneyFull(snapshot.account.balance)}</b>
           </span>
-          <span title={t('panel.account.totalCostsTip')}>
-            {t('panel.account.totalCosts')}
-            <b>{formatMoneyFull(snapshot.account.totalCosts)}</b>
-          </span>
+          {snapshot.account.totalCosts === undefined ? null : (
+            <span title={t('panel.account.totalCostsTip')}>
+              {t('panel.account.totalCosts')}
+              <b>{formatMoneyFull(snapshot.account.totalCosts)}</b>
+            </span>
+          )}
           {snapshot.account.bonusBalance > 0 ? (
             <span title={t('panel.account.bonusTip')}>
               {t('panel.account.bonus')}

@@ -404,8 +404,11 @@ export type TokenSource =
 export interface AccountSummary {
   balance: number
   bonusBalance: number
-  /** 官方账单的累计消费，元。 */
-  totalCosts: number
+  /**
+   * 官方账单的累计消费，元。只有 `get_user_summary` 给得出它，所以它来自刷新周期；
+   * 余额另有一条高频通道（见 `types.ts` 的 `RPC.balanceWatch`），两者可能取自不同时刻。
+   */
+  totalCosts?: number
   currency: string
 }
 
@@ -484,4 +487,10 @@ export const RPC = {
   setToken: 'tlogs.setToken',
   logout: 'tlogs.logout',
   export: 'tlogs.export',
+  /**
+   * 余额高频通道的开关：`{ on: true }` 让宿主按固定节奏查一次账号余额（走 deepseekAccount，
+   * 本插件不接触凭据），`{ on: false }` 停掉。返回值是那一刻的快照 —— 展开面板打开时调它，
+   * 所以「谁在看」决定这条通道是否在跑。
+   */
+  balanceWatch: 'tlogs.balanceWatch',
 } as const

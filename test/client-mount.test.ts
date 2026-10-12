@@ -221,6 +221,10 @@ function makeConnection(
             return { ok: true, value: opts.series ?? seriesFixture }
           case 'tlogs.refresh':
             return { ok: true, value: { started: false } }
+          // 余额高频通道的开关返回的是「那一刻的快照」，必须是完整快照而不是占位对象：
+          // 客户端会用它直接替换界面状态。
+          case 'tlogs.balanceWatch':
+            return { ok: true, value: snapshot }
           case 'tlogs.login':
             if (opts.loginFailure) {
               return { ok: false, error: { code: 'login-failed', message: opts.loginFailure } }
@@ -1411,6 +1415,137 @@ test('「跟随系统」在每次重渲染时读取宿主语言（<html lang>）
     })
   } finally {
     dom.window.document.documentElement.lang = 'zh'
+    await act(async () => {
+      root.unmount()
+    })
+    container.remove()
+  }
+})
+
+test('余额高频通道由展开面板开关：展开 on=true 并立刻取回快照、收起 on=false', async () => {
+  const client = loadClientBundle()
+  const payloads: Array<{ endpoint: string; payload: unknown }> = []
+  const snapshot = snapshotFixture({
+    account: { balance: 1, bonusBalance: 0, totalCosts: 726.68, currency: 'CNY' },
+  })
+  const { ctx, registrations } = makeCtx(snapshot, { payloads })
+  client.apply(ctx)
+  const reg = registrations[0]!
+  const Component = reg.component as React.ComponentType<Record<string, unknown>>
+  const share = (reg.options.inject as () => Record<string, unknown>)()
+  const container = doc().createElement('div')
+  doc().body.appendChild(container)
+  const root: Root = createRoot(container as unknown as Element)
+  mountedRoots.push({ root, container })
+
+  const watches = () => payloads.filter((p) => p.endpoint === 'tlogs.balanceWatch')
+  const click = async (el: Element) => {
+    await act(async () => {
+      el.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
+      await new Promise((r) => setTimeout(r, 0))
+    })
+  }
+
+  await act(async () => {
+    root.render(React.createElement(Component, { ...share, wide: true }))
+    await new Promise((r) => setTimeout(r, 0))
+  })
+  assert.deepEqual(watches(), [], '收起态不得开着余额通道：没人看着就不该有平台请求')
+
+  await click(container.querySelector('button[aria-label*="展开"]')!)
+  assert.deepEqual(
+    watches().map((w) => w.payload),
+    [{ on: true }],
+    '展开面板必须打开余额通道（并借此立刻取回一次快照）',
+  )
+  assert.ok(container.querySelector('.tlogs-panel'), '面板应已展开')
+
+  await click(container.querySelector('button[aria-label*="收起"]')!)
+  assert.deepEqual(
+    watches().map((w) => w.payload),
+    [{ on: true }, { on: false }],
+    '收起面板必须关掉余额通道',
+  )
+  assert.equal(container.querySelector('.tlogs-panel'), null)
+
+  // 卸载同样要关（effect cleanup 兜底）：否则隐藏的页脚会留下一个一直轮询的宿主定时器。
+  await act(async () => {
+    root.unmount()
+  })
+  container.remove()
+  assert.deepEqual(
+    watches().map((w) => w.payload),
+    [{ on: true }, { on: false }],
+    '卸载时面板已收起，不该再多发一次开关；但绝不能少关',
+  )
+})
+
+test('卸载时面板仍开着 → 必须补发 on=false（不然宿主定时器会一直在跑）', async () => {
+  const client = loadClientBundle()
+  const payloads: Array<{ endpoint: string; payload: unknown }> = []
+  const { ctx, registrations } = makeCtx(snapshotFixture(), { payloads })
+  client.apply(ctx)
+  const reg = registrations[0]!
+  const Component = reg.component as React.ComponentType<Record<string, unknown>>
+  const share = (reg.options.inject as () => Record<string, unknown>)()
+  const container = doc().createElement('div')
+  doc().body.appendChild(container)
+  const root: Root = createRoot(container as unknown as Element)
+
+  await act(async () => {
+    root.render(React.createElement(Component, { ...share, wide: true, defaultExpanded: true }))
+    await new Promise((r) => setTimeout(r, 0))
+  })
+  const opened = payloads.filter((p) => p.endpoint === 'tlogs.balanceWatch')
+  assert.deepEqual(opened.map((p) => p.payload), [{ on: true }], '默认展开时应已打开余额通道')
+
+  await act(async () => {
+    root.unmount()
+    await new Promise((r) => setTimeout(r, 0))
+  })
+  container.remove()
+
+  const all = payloads.filter((p) => p.endpoint === 'tlogs.balanceWatch')
+  assert.deepEqual(all.map((p) => p.payload), [{ on: true }, { on: false }], '卸载必须兜底关掉余额通道')
+})
+
+test('宿主没有余额通道（旧版 host）时客户端照常工作', async () => {
+  const client = loadClientBundle()
+  const { ctx, registrations, rpcCalls } = makeCtx(snapshotFixture())
+  // 旧版宿主不认识 tlogs.balanceWatch，回一个失败信封。
+  const failing = ctx as unknown as {
+    connection: { rpc: { call: (c: string, e: string, p: unknown) => Promise<unknown> } }
+  }
+  const originalCall = failing.connection.rpc.call
+  failing.connection.rpc.call = (channel: string, endpoint: string, payload: unknown) => {
+    rpcCalls.push(endpoint)
+    return endpoint === 'tlogs.balanceWatch'
+      ? Promise.resolve({ ok: false, error: { code: 'bad-request', message: 'unknown endpoint' } })
+      : originalCall(channel, endpoint, payload)
+  }
+
+  client.apply(ctx)
+  const reg = registrations[0]!
+  const Component = reg.component as React.ComponentType<Record<string, unknown>>
+  const share = (reg.options.inject as () => Record<string, unknown>)()
+  const container = doc().createElement('div')
+  doc().body.appendChild(container)
+  const root: Root = createRoot(container as unknown as Element)
+  mountedRoots.push({ root, container })
+
+  try {
+    await act(async () => {
+      root.render(React.createElement(Component, { ...share, wide: true }))
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    await act(async () => {
+      const expand = container.querySelector('button[aria-label*="展开"]') as unknown as HTMLElement
+      expand.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    assert.ok(container.querySelector('.tlogs-panel'), '宿主不支持余额通道时面板仍必须正常展开')
+    assert.ok(rpcCalls.includes('tlogs.balanceWatch'), '客户端确实尝试过这条通道')
+  } finally {
     await act(async () => {
       root.unmount()
     })

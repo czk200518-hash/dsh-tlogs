@@ -51,6 +51,17 @@ export function TlogsFooter(props: TlogsFooterProps): React.ReactElement {
   const numberFormat = display?.numberFormat ?? props.numberFormat ?? 'short'
   const enableDetailView = display?.enableDetailView ?? props.enableDetailView !== false
 
+  // Balance polls on its own only while the panel is on screen: the host loop is driven by this
+  // effect (cleanup covers collapsing and unmount alike), never by the plugin merely being loaded.
+  const { balanceWatch } = store
+  React.useEffect(() => {
+    if (view !== 'expanded') return
+    void balanceWatch(true)
+    return () => {
+      void balanceWatch(false)
+    }
+  }, [view, balanceWatch])
+
   const openDetail = () => {
     setDetailOpen(true)
     void store.loadDetail()

@@ -101,6 +101,12 @@ export function makeRpcHandler(deps: RpcDeps) {
           return ok(started)
         }
 
+        case RPC.balanceWatch: {
+          // 展开面板打开时 on=true、收起时 on=false。返回值就是那一刻的快照，省掉客户端
+          // 紧随其后的一次 snapshot 往返。
+          return ok(await service.balanceWatch(payload.on === true))
+        }
+
         case RPC.detail:
           return ok(service.detail())
 
