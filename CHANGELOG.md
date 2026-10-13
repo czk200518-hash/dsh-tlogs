@@ -19,10 +19,14 @@
   而不是编一个版本号冒充某个构建。
 - 「官方累计消费」（`total_costs`）只有 `get_user_summary` 给得出，因此仍随刷新周期更新，
   且不会被高频通道的余额结果抹掉（两个来源在快照里合并成一行）。
+- 钱包字段按**宿主投影后**的名字读：`getBalance()` 出参是 `{ status, value, bonusWallets }`
+  （Platform 的 `normal_wallets` / `bonus_wallets` 在宿主侧已改名）。按 Platform 原名读会把两条钱包
+  都读成空，界面上表现为「明明有余额却恒显示 ¥0」；失败态与认不出的结构一律当作「这次没有结果」，
+  保留上一次的余额，绝不退化成 0 去覆盖它。
 - 查询失败只表现为「这一格暂时不更新」：保留上一次的余额，不清零、不报错。
 - 开关由展开面板驱动（`tlogs.balanceWatch`），面板卸载时兜底停表；没人看着时不产生任何请求。
-- 质量门全绿：`verify:secrets`（180 文件）、`verify:i18n`、`verify:comments`（18.6% ≤ 19%）、
-  `typecheck`、`build`、257 项测试（255 通过 / 2 跳过，跳过项为需要外部 Python 的 golden）。
+- 质量门全绿：`verify:secrets`（181 文件）、`verify:i18n`、`verify:comments`（18.6% ≤ 19%）、
+  `typecheck`、`build`、258 项测试（256 通过 / 2 跳过，跳过项为需要外部 Python 的 golden）。
 
 ### 整理：源码表述层重写（行为零变化）
 

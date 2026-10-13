@@ -26,6 +26,12 @@ function failingAccount(): { getBalance: () => Promise<unknown> } {
 const wallet = (balance: string, currency = 'CNY') => ({ currency, balance })
 
 /**
+ * 宿主投影后的成功态。Platform 的 `normal_wallets` / `bonus_wallets` 到了 `getBalance()` 出参里已经改名成
+ * `value` / `bonusWallets`（见 dsh-deepseek-account 的 AccountController 契约），这里必须按投影后的名字造。
+ */
+const ready = (value: unknown[], bonusWallets: unknown[] = []) => ({ status: 'ready', value, bonusWallets })
+
+/**
  * 与 lib 里那份 `import.meta.url` 同一形态的入口地址：`lib/auth/account-balance.js`，包根上溯两级。
  * 模块相对路径依赖它解析，所以这里必须按真实布局构造，否则测的就不是真实解析路径。
  */
@@ -36,7 +42,7 @@ test('余额取数：请求体带上包版本 / 语言 / UTC 偏移，且令牌�
   const service = {
     getBalance(...args: unknown[]) {
       seenArgs.push(args)
-      return Promise.resolve({ normal_wallets: [wallet('20.51050378')], bonus_wallets: [wallet('5.0000000000000000')] })
+      return Promise.resolve(ready([wallet('20.51050378')], [wallet('5.0000000000000000')]))
     },
   }
 
@@ -70,7 +76,7 @@ test('读不到包版本就不查余额（宁可这一格不更新，也不编�
     service: {
       getBalance: () => {
         called++
-        return { normal_wallets: [wallet('1')] }
+        return ready([wallet('1')])
       },
     },
     entryUrl: new URL('file:///definitely/missing/package.json').href,
@@ -105,17 +111,48 @@ test('失败一律降级为 undefined，日志压成单行（异常原文不得�
 
 test('钱包结构：缺字段按 0、非法值不产生 NaN、赠送余额独立于充值余额', async () => {
   const onlyNormal = await readPlatformBalance({
-    service: { getBalance: () => ({ normal_wallets: [{ currency: 'USD', balance: '1.5' }] }) },
+    service: { getBalance: () => ready([{ currency: 'USD', balance: '1.5' }]) },
   })
   assert.deepEqual(onlyNormal, { balance: 1.5, bonusBalance: 0, currency: 'USD' })
 
   const junk = await readPlatformBalance({
-    service: { getBalance: () => ({ normal_wallets: [{ balance: 'abc' }], bonus_wallets: [{ balance: '0E-16' }] }) },
+    service: { getBalance: () => ready([{ balance: 'abc' }], [{ balance: '0E-16' }]) },
   })
   assert.deepEqual(junk, { balance: 0, bonusBalance: 0, currency: 'CNY' })
 
-  const empty = await readPlatformBalance({ service: { getBalance: () => ({}) } })
+  // 成功态但钱包为空是真实的 0（比如余额刚好花光），不是「读不懂」。
+  const empty = await readPlatformBalance({
+    service: { getBalance: () => ready([], []) },
+  })
   assert.deepEqual(empty, { balance: 0, bonusBalance: 0, currency: 'CNY' })
+})
+
+test('宿主出参必须先认投影：Platform 原始字段名（normal_wallets）在这里不再成立', async () => {
+  // 这条守的是一个真实事故：宿主把 normal_wallets / bonus_wallets 投影成 value / bonusWallets，
+  // 插件按 Platform 的原始名字读，两条数组都读成空 —— 界面上「明明有余额却永远显示 ¥0」，且不报错。
+  const projected = await readPlatformBalance({
+    service: { getBalance: () => ready([wallet('12.1893149')], [wallet('0E-16')]) },
+  })
+  assert.deepEqual(projected, { balance: 12.1893149, bonusBalance: 0, currency: 'CNY' })
+
+  // 宿主的失败态（未登录 / 平台拒绝）是正常留空，连带不出日志。
+  const warns: string[] = []
+  const logger = { warn: (m: string) => warns.push(m) }
+  assert.equal(await readPlatformBalance({ service: { getBalance: () => ({ status: 'failed' }) }, logger }), undefined)
+  assert.deepEqual(warns, [])
+
+  // 其余形状（没有 status、有 status 却没钱包、钱包不是数组）都是契约漂移：留空，但必须留下能排查的字段名 ——
+  // 这个事故当初之所以难查，正是因为旧代码不报错、只是把余额写成 0。
+  assert.equal(await readPlatformBalance({ service: { getBalance: () => ({}) }, logger }), undefined)
+  assert.equal(await readPlatformBalance({ service: { getBalance: () => ({ status: 'ready' }) }, logger }), undefined)
+  assert.equal(
+    await readPlatformBalance({ service: { getBalance: () => ready(undefined as never) }, logger }),
+    undefined,
+  )
+  assert.equal(warns.length, 3)
+  assert.match(warns[0]!, /结构不认识/)
+  assert.match(warns[1]!, /status/, '日志要带上收到的字段名，否则排查无从下手')
+  assert.equal(/[\r\n]/.test(warns.join('')), false, '日志仍需压成单行')
 })
 
 /** 记录注册行为的最小宿主 ctx（与 host-plugin.test.ts 同款，但账号服务可注入 getBalance）。 */
@@ -196,7 +233,7 @@ test('端到端：balanceWatch 让余额按 5 秒节奏查，收起即停且不�
     },
     async getBalance() {
       balanceReads++
-      return { normal_wallets: [wallet('20.51050378')], bonus_wallets: [wallet('3.5')] }
+      return ready([wallet('20.51050378')], [wallet('3.5')])
     },
   }
 
@@ -271,7 +308,7 @@ test('余额通道超时/失败只是不更新：不抛给客户端，也不动�
     },
     async getBalance() {
       if (fail) throw new Error('network down')
-      return { normal_wallets: [wallet('7.25')] }
+      return ready([wallet('7.25')])
     },
   }
 
@@ -313,7 +350,7 @@ test('useAccountSession:false 时余额通道不存在（不该从另一条路�
     },
     async getBalance() {
       balanceReads++
-      return { normal_wallets: [wallet('1')] }
+      return ready([wallet('1')])
     },
   }
 
@@ -365,7 +402,7 @@ test('余额与官方累计消费合并成一行：余额来自高频通道，�
       }
     },
     async getBalance() {
-      return { normal_wallets: [wallet('20.51050378')], bonus_wallets: [wallet('1.25')] }
+      return ready([wallet('20.51050378')], [wallet('1.25')])
     },
   }
 
