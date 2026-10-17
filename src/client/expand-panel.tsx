@@ -377,15 +377,15 @@ export function ExpandPanel(props: ExpandPanelProps): React.ReactElement {
         {snapshot === null ? <div className="tlogs-empty">{t('common.loading')}</div> : null}
       </div>
 
-      {/* Platform account overview: balance and the official bill's cumulative spend. The two
-          numbers come from different cadences — the balance has its own fast channel while the
-          cumulative spend only comes back with a refresh — so either may be absent, and the card
-          ¥ is recomputed from `usage/cost` (hence the rounding hair against the official number). */}
+      {/* Platform account overview: spendable balance and the official bill's cumulative spend.
+          The balance sums recharge + bonus because Platform spends both — showing only the recharge
+          part reads as "you can't afford it". The two figures still arrive on different cadences
+          (balance has its own fast channel, cumulative spend only comes back with a refresh). */}
       {snapshot?.account ? (
         <div className="tlogs-account">
           <span title={t('panel.account.balanceTip')}>
             {t('panel.account.balance')}
-            <b>{formatMoneyFull(snapshot.account.balance)}</b>
+            <b>{formatMoneyFull(snapshot.account.balance + snapshot.account.bonusBalance)}</b>
           </span>
           {snapshot.account.totalCosts === undefined ? null : (
             <span title={t('panel.account.totalCostsTip')}>
@@ -393,12 +393,6 @@ export function ExpandPanel(props: ExpandPanelProps): React.ReactElement {
               <b>{formatMoneyFull(snapshot.account.totalCosts)}</b>
             </span>
           )}
-          {snapshot.account.bonusBalance > 0 ? (
-            <span title={t('panel.account.bonusTip')}>
-              {t('panel.account.bonus')}
-              <b>{formatMoneyFull(snapshot.account.bonusBalance)}</b>
-            </span>
-          ) : null}
         </div>
       ) : null}
 

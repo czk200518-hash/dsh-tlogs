@@ -1480,6 +1480,35 @@ test('余额高频通道由展开面板开关：展开 on=true 并立刻取回�
   )
 })
 
+test('余额一项就是充值余额 + 赠金：平台把两者都算作可用余额，不再单独列赠送', async () => {
+  const client = loadClientBundle()
+  const payloads: Array<{ endpoint: string; payload: unknown }> = []
+  // 2026-10-17 平台真实数据：充值 8.26679914 + 赠金 71.62077988（合计 79.88757902）。
+  const snapshot = snapshotFixture({
+    account: { balance: 8.26679914, bonusBalance: 71.62077988, totalCosts: 749.67425886, currency: 'CNY' },
+  })
+  const { ctx, registrations } = makeCtx(snapshot, { payloads })
+  client.apply(ctx)
+  const reg = registrations[0]!
+  const Component = reg.component as React.ComponentType<Record<string, unknown>>
+  const share = (reg.options.inject as () => Record<string, unknown>)()
+  const container = doc().createElement('div')
+  doc().body.appendChild(container)
+  const root: Root = createRoot(container as unknown as Element)
+  mountedRoots.push({ root, container })
+
+  await act(async () => {
+    root.render(React.createElement(Component, { ...share, wide: true, defaultExpanded: true }))
+    await new Promise((r) => setTimeout(r, 0))
+  })
+
+  const account = container.querySelector('.tlogs-account')
+  assert.ok(account, '展开面板应显示账号行')
+  const text = account!.textContent ?? ''
+  assert.ok(text.includes('¥79.88757902'), `余额必须是充值 + 赠金（实际渲染：${text}）`)
+  assert.equal(text.includes('赠送'), false, '不再单独列赠送：余额一项已含赠金')
+})
+
 test('卸载时面板仍开着 → 必须补发 on=false（不然宿主定时器会一直在跑）', async () => {
   const client = loadClientBundle()
   const payloads: Array<{ endpoint: string; payload: unknown }> = []
