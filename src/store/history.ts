@@ -105,6 +105,15 @@ export interface FetchPlan {
 }
 
 /**
+ * 这个月是否装着「上一次成功拉取」留下的数据。拉取失败的行会被保留下来（只加错误标记），
+ * 读取方据此区分「失败但还有旧数据、照常显示」与「这个月真的什么都没有」。
+ */
+export function hasCachedMonthData(row: MonthRow | undefined): boolean {
+  if (!row) return false
+  return row.daysFetched === true || row.costFetched === true || (row.days?.length ?? 0) > 0
+}
+
+/**
  * 按月历史存储。只保存成功月份的明细；失败月份记进 `failed`，不能当成「0 用量」。失败月份会以
  * 空 Stat 参与按年统计（贡献 0），所以存在失败月份时「总计」是不完整的，UI 必须能把状态表达出来。
  */
@@ -249,9 +258,9 @@ export class HistoryStore {
       const key = monthKey(m.year, m.month)
       const row = this.rows.get(key)
 
-      if (!row || row.error) {
-        // 失败月份贡献空 Stat（全 0），但仍在 monthly 里占位。
-        monthly.push(row ?? { year: m.year, month: m.month, stat: emptyStat(), models: {}, error: this.failureReasons.get(key) })
+      if (!row) {
+        // 完全没有数据的月份贡献空 Stat（全 0），但仍在 monthly 里占位。
+        monthly.push({ year: m.year, month: m.month, stat: emptyStat(), models: {}, error: this.failureReasons.get(key) })
         continue
       }
 

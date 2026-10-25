@@ -32,6 +32,12 @@ import {
 
 const T0 = Date.UTC(2026, 9, 8, 1, 0, 0) // 2026-10-08T01:00:00Z
 
+/**
+ * 固定成 UTC+8 的「本机日」键：测试不能依赖机器时区，否则同一份断言在 CI 上会因为日界不同而红。
+ * 用固定偏移而不是 `localDateKey`，被测的正是「日界按本地 0 点切」这件事本身。
+ */
+const shanghaiDay = (d: Date): string => new Date(d.getTime() + 8 * 3_600_000).toISOString().slice(0, 10)
+
 function jsonl(records: unknown[]): string {
   return records.map((r) => JSON.stringify(r)).join('\n') + '\n'
 }
@@ -97,7 +103,7 @@ test('同一步的两个 usage 事件只记一次，且以最终样本为准（�
         message(1, 1, { inputTokens: 12, outputTokens: 6, cacheReadTokens: 200 }, T0 + 2000),
       ]),
     )
-    const days = await replaySessionUsage(join(root, 'ws', 's1', 'session.v4.jsonl'))
+    const { days } = await replaySessionUsage(join(root, 'ws', 's1', 'session.v4.jsonl'))
     const day = days.get('2026-10-08')
     assert.ok(day, '应产生 2026-10-08 这一天的聚合')
     const agg = day!.get('deepseek-official')
@@ -131,7 +137,7 @@ test('fork 种子事件（time < 会话 createdAt）不计入，父会话已经�
         message(2, 1, { inputTokens: 10, outputTokens: 1, cacheReadTokens: 100 }, T0 + 1000, 'deepseek-account'),
       ]),
     )
-    const days = await replaySessionUsage(join(root, 'ws', 's1', 'session.v4.jsonl'))
+    const { days } = await replaySessionUsage(join(root, 'ws', 's1', 'session.v4.jsonl'))
     const stat = days.get('2026-10-08')!.get('deepseek-account')!.stat
     assert.equal(stat.PROMPT_CACHE_MISS_TOKEN + stat.PROMPT_CACHE_HIT_TOKEN, 110, '种子用量必须被剔除')
     assert.equal(stat.REQUEST, 1)
@@ -155,7 +161,7 @@ test('非 DeepSeek 供应商按样本来源拆分，不混进 DeepSeek 通道', 
         message(1, 2, { inputTokens: 1, outputTokens: 1, cacheReadTokens: 1 }, T0 + 2000, 'xiaomi', 'mimo'),
       ]),
     )
-    const days = await replaySessionUsage(join(root, 'ws', 's1', 'session.v4.jsonl'))
+    const { days } = await replaySessionUsage(join(root, 'ws', 's1', 'session.v4.jsonl'))
     const day = days.get('2026-10-08')!
     assert.deepEqual([...day.keys()].sort(), ['deepseek-official', 'xiaomi'])
     assert.equal(tokenTotal(day.get('xiaomi')!.stat), 3)
@@ -182,10 +188,126 @@ test('zstd 容器按帧边界解压：多帧日志必须全部读到', async (t)
     writeFileSync(file, bytes)
 
     assert.equal(scanZstdFrames(bytes).length, 2, '两个 frame 都要被识别')
-    const days = await replaySessionUsage(file)
+    const { days } = await replaySessionUsage(file)
     const stat = days.get('2026-10-08')!.get('deepseek-official')!.stat
     assert.equal(stat.PROMPT_CACHE_MISS_TOKEN, 7)
     assert.equal(stat.PROMPT_CACHE_HIT_TOKEN, 70)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('本机日桶与 UTC 日桶分开：北京 02:00 的样本算「本机今天」、不算「平台昨天」', async () => {
+  const root = makeTempRoot()
+  try {
+    // 2026-10-09T18:00Z = 北京 2026-10-10 02:00：UTC 日仍是 10-09，本机日已经是 10-10。
+    // 「今日」按本机 0 点起算时，这类样本必须落在本机日桶里 —— 否则凌晨用量会凭空消失。
+    const at = Date.UTC(2026, 9, 9, 18, 0, 0)
+    writeSession(
+      root,
+      'ws',
+      's1',
+      jsonl([
+        session('s1', Date.UTC(2026, 9, 9, 17, 0, 0)),
+        header('deepseek-official', 'deepseek-flash', at),
+        message(1, 1, { inputTokens: 10, outputTokens: 5, cacheReadTokens: 100 }, at + 1000),
+      ]),
+    )
+    const { days, localDays } = await replaySessionUsage(join(root, 'ws', 's1', 'session.v4.jsonl'), {
+      localDayKey: shanghaiDay,
+    })
+    assert.deepEqual([...days.keys()], ['2026-10-09'], 'UTC 桶按接口口径切')
+    assert.deepEqual([...localDays.keys()], ['2026-10-10'], '本机日桶按本地日历日切')
+    assert.equal(tokenTotal(localDays.get('2026-10-10')!.get('deepseek-official')!.stat), 115)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('过程指标：TTFT/生成耗时/工具耗时/失败/中断/循环/编辑次数都按元数据聚合', async () => {
+  const root = makeTempRoot()
+  try {
+    const at = Date.UTC(2026, 9, 8, 10, 0, 0) // 2026-10-08T10:00:00Z
+    // 输出 200：足够长的一段生成，TPS 峰值才不会被「几十毫秒的首尾差」放大成噪声
+    const usage = { inputTokens: 10, outputTokens: 200, cacheReadTokens: 100, cacheWriteTokens: 0, totalTokens: 310 }
+    const call = (id: string, name: string, args: string, time: number) => ({
+      type: 'tool/call',
+      time,
+      data: { turn: 1, step: 2, callId: id, name, arguments: args },
+    })
+    const result = (id: string, time: number, text: string, isError = false) => ({
+      type: 'tool/result',
+      time,
+      data: {
+        turn: 1,
+        step: 2,
+        message: { role: 'tool', toolCallId: id, isError, content: [{ type: 'text', text }] },
+      },
+    })
+    writeSession(
+      root,
+      'ws',
+      's1',
+      jsonl([
+        session('s1', at),
+        { type: 'step/start', time: at + 1000, data: { turn: 1, step: 1 } },
+        {
+          type: 'assistant/message',
+          time: at + 3000,
+          data: {
+            turn: 1,
+            step: 1,
+            usage,
+            // 首 token 在 step/start 之后 500ms；最后一 token 在 message 时刻（+3000）
+            stream: [
+              { type: 'chunk', time: at + 1500, chunk: { type: 'block-start', index: 0 } },
+              { type: 'reasoning-chunks', time0: at + 1500, index: 0, dt: [100, 100, 100] },
+              { type: 'chunk', time: at + 3000, chunk: { type: 'block-end', index: 0 } },
+            ],
+          },
+        },
+        { type: 'step/start', time: at + 3050, data: { turn: 1, step: 2 } },
+        call('c1', 'read', '{"path":"/x"}', at + 3100),
+        result('c1', at + 3300, 'hello'),
+        call('c2', 'read', '{"path":"/x"}', at + 3400),
+        result('c2', at + 3500, 'oops', true),
+        call('c3', 'edit', '{}', at + 3600),
+        result('c3', at + 3700, 'ok'),
+        { type: 'job/registered', time: at + 4000, data: { jobId: 'j1', kind: 'bash', startedAt: at + 4000 } },
+        {
+          type: 'job/settled',
+          time: at + 4600,
+          data: { jobId: 'j1', startedAt: at + 4000, finishedAt: at + 4600, status: 'killed' },
+        },
+      ]),
+    )
+
+    const { insights } = await replaySessionUsage(join(root, 'ws', 's1', 'session.v4.jsonl'))
+    assert.equal(insights.calls, 1)
+    assert.equal(insights.ttftMsSum, 500, 'TTFT = 首个 stream 事件 − step/start')
+    assert.equal(insights.genMsSum, 1500, '生成耗时 = 首尾 stream 事件之差')
+    assert.equal(insights.outputTokensSum, 200)
+    assert.equal(insights.tpsPeak, 200 / 1.5, 'TPS 峰值按单次调用算（输出 ≥20 且生成 ≥250ms 才计入）')
+    // 步数与轮次：一轮两步
+    assert.equal(insights.steps, 2)
+    assert.equal(insights.turns, 1)
+    assert.equal(insights.stepsMaxTurn, 2)
+    assert.deepEqual(insights.stepBuckets, [1, 0, 0, 0, 0, 0])
+    // 工具：read 两次（200ms + 100ms）、edit 一次；失败 1 次；循环 1 次（同名同参数长度）
+    const read = insights.tools.find((t) => t.name === 'read')!
+    assert.equal(read.calls, 2)
+    assert.equal(read.errors, 1)
+    assert.equal(read.measured, 2, '两条 result 都匹配上了')
+    assert.equal(read.totalMs, 300)
+    assert.equal(read.resultBytes, 5 + 4, '返回内容只量字节数')
+    assert.equal(insights.tools.find((t) => t.name === 'edit')!.calls, 1)
+    assert.equal(insights.repeatedCalls, 1)
+    assert.equal(insights.maxRepeatRun, 2)
+    assert.equal(insights.editCalls, 1)
+    // 后台任务：被 kill 的算中断，并计入后台耗时
+    assert.equal(insights.jobs.total, 1)
+    assert.equal(insights.jobs.killed, 1)
+    assert.equal(insights.jobs.totalMs, 600)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -204,26 +326,31 @@ test('存储：增量扫描只重解析变化的日志，且能落盘/恢复', a
         message(1, 1, { inputTokens: 5, outputTokens: 5, cacheReadTokens: 50 }, T0 + 1000),
       ]),
     )
-    const store = new SessionUsageStore({ root, maxDays: 32 })
+    const store = new SessionUsageStore({ root, maxDays: 32, localDayKey: shanghaiDay })
     const first = await store.refresh()
     assert.equal(first.available, true)
     assert.equal(first.parsedFiles, 1)
     assert.equal(first.days.length, 1)
     assert.equal(first.days[0]!.date, '2026-10-08')
+    assert.equal(first.localDays[0]!.date, '2026-10-08')
 
     const second = await store.refresh()
     assert.equal(second.parsedFiles, 0, 'size/mtime 未变的日志不得重解析')
 
     // 落盘 → 恢复：只有短哈希与数字，不含路径
-    const disk = JSON.parse(JSON.stringify(store.serialize())) as { files: Array<{ key: string }> }
+    const disk = JSON.parse(JSON.stringify(store.serialize())) as {
+      files: Array<{ key: string; localDays: unknown[] }>
+    }
     assert.equal(JSON.stringify(disk).includes('sessions'), false, '落盘内容不得包含路径')
     assert.equal(disk.files[0]!.key, fileKey(join(root, 'ws', 's1', 'session.v4.jsonl')))
+    assert.equal(disk.files[0]!.localDays.length, 1, '本机日桶必须一起落盘，否则重启后「今日（本机日）」要等重扫')
 
-    const restored = new SessionUsageStore({ root, maxDays: 32 })
+    const restored = new SessionUsageStore({ root, maxDays: 32, localDayKey: shanghaiDay })
     const n = restored.load(disk)
     assert.equal(n, 1)
     assert.equal(restored.current.available, true, '恢复后应立刻可用（无需等一次扫描）')
     assert.equal(restored.current.days[0]!.date, '2026-10-08')
+    assert.equal(restored.current.localDays[0]!.date, '2026-10-08')
     // 「供应商 → 模型」这一层必须一起往返，否则重启后详细数据里只剩供应商
     const prov = restored.current.days[0]!.byProvider[0]!
     assert.equal(prov.provider, 'deepseek-official')

@@ -719,6 +719,30 @@ export const CSS = `
   background: color-mix(in srgb, var(--tlogs-accent) 12%, transparent);
 }
 .tlogs-settings-radio { accent-color: var(--tlogs-accent); margin: 0; }
+
+/* Breakdown tab: KPI row + two composition lists. Token and money rows share one grid (dot, name,
+   bar, value, share) so the two lists line up; the value column widens for ¥ amounts. */
+.tlogs-bd { display: flex; flex-direction: column; gap: 10px; }
+.tlogs-bd-kpis { display: flex; flex-wrap: wrap; gap: 16px; }
+.tlogs-bd-kpi { display: flex; flex-direction: column; gap: 2px; }
+.tlogs-bd-kpi-label { font-size: 11px; color: var(--tlogs-muted); }
+.tlogs-bd-glyph { font-style: normal; margin-right: 4px; opacity: 0.8; }
+.tlogs-bd-kpi-value { font-size: 16px; font-variant-numeric: tabular-nums; }
+.tlogs-bd-title { font-size: 13px; font-weight: 600; margin-top: 2px; }
+.tlogs-bd-rows { display: flex; flex-direction: column; gap: 6px; }
+.tlogs-bd-row {
+  display: grid;
+  grid-template-columns: 8px minmax(72px, 132px) minmax(48px, 1fr) 82px 46px;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+}
+.tlogs-bd-dot { width: 8px; height: 8px; border-radius: 50%; }
+.tlogs-bd-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tlogs-bd-bar { height: 6px; border-radius: 3px; background: var(--tlogs-border); overflow: hidden; }
+.tlogs-bd-bar i { display: block; height: 100%; }
+.tlogs-bd-value { text-align: right; font-variant-numeric: tabular-nums; }
+.tlogs-bd-pct { text-align: right; color: var(--tlogs-muted); font-variant-numeric: tabular-nums; }
 `
 
 /**

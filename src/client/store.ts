@@ -6,6 +6,7 @@
 
 import * as React from 'react'
 import { callRpc, type Rpc } from './api.js'
+import { getTodayBasis, subscribeTodayBasis } from './today-basis.js'
 // Errors are assembled in event handlers and async chains, never during render, so the module-level
 // `t` is fine here: a failure is a fact that already happened, tied to the language it was made in.
 import { t } from './i18n/index.js'
@@ -23,10 +24,10 @@ const POLL_MS = 800
 const MAX_POLLS = 300
 /**
  * How often the snapshot is re-read while idle (ms). Denser than the host's own auto-refresh (5
- * minutes by default), so a background refresh shows up within a minute; it is a local RPC and
+ * minutes by default), so a background refresh shows up within half a minute; it is a local RPC and
  * costs nothing externally.
  */
-const IDLE_RELOAD_MS = 60_000
+const IDLE_RELOAD_MS = 30_000
 
 function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))
@@ -93,7 +94,8 @@ export function useTlogs(rpc: Rpc | undefined, initialReason: 'mount' | 'expand'
 
   const reload = React.useCallback(async (): Promise<UsageSnapshot | null> => {
     try {
-      const s = await callRpc<UsageSnapshot>(rpc, RPC.snapshot)
+      // 口径随请求走：换了「今日」的日界，下一次快照就是新口径，不必让 host 记住状态。
+      const s = await callRpc<UsageSnapshot>(rpc, RPC.snapshot, { todayBasis: getTodayBasis() })
       if (alive.current) {
         setSnapshot(s)
         setError(null)
@@ -203,6 +205,18 @@ export function useTlogs(rpc: Rpc | undefined, initialReason: 'mount' | 'expand'
   }, [reload, reloadSeries])
 
   /**
+   * A 「今日」basis switch changes what the host puts in that card, so the snapshot has to be
+   * re-read: the data is already in memory on both sides, only the window differs.
+   */
+  React.useEffect(
+    () =>
+      subscribeTodayBasis(() => {
+        void reload()
+      }),
+    [reload],
+  )
+
+  /**
    * Toggle the host's balance loop. Turning it on applies the snapshot the host just took, so the
    * panel does not render a stale balance for a whole poll interval; turning it off bumps the
    * sequence so an in-flight response cannot write a later panel's numbers.
@@ -211,7 +225,7 @@ export function useTlogs(rpc: Rpc | undefined, initialReason: 'mount' | 'expand'
     async (on: boolean): Promise<void> => {
       const seq = ++balanceSeq.current
       try {
-        const s = await callRpc<UsageSnapshot>(rpc, RPC.balanceWatch, { on })
+        const s = await callRpc<UsageSnapshot>(rpc, RPC.balanceWatch, { on, todayBasis: getTodayBasis() })
         if (alive.current && on && seq === balanceSeq.current) {
           setSnapshot(s)
           setError(null)

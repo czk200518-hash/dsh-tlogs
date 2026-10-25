@@ -176,6 +176,111 @@ export interface DetailData {
    * 否则「供应商」页签只是一个空表格。
    */
   localUnavailable?: { reason?: string }
+  /**
+   * 「拆分」页签的三个口径（总计 / 当月 / 今日）。平台口径：token 与金额同源，才能算占比；
+   * 本机口径没有计价能力，所以不参与这里的分母。
+   */
+  breakdown?: UsageBreakdown
+  /** 「性能」「工具」页签的过程指标；本机口径、覆盖会话日志窗口，扫描完成前缺省。 */
+  insights?: InsightSummary
+  /** 过程指标不可用的原因（本机口径关闭 / 还没扫完 / 日志里没有调用）。 */
+  insightsUnavailable?: { reason?: string }
+  /**
+   * 平台五类单价的估算依据（每 token 的元数，按总计金额 ÷ 总计用量算）。
+   * 项目与对话没有平台账单维度，只能按它估算，界面上必须标「估算」。
+   */
+  unitPrices?: Record<string, number>
+  /** 会话表；按 token 降序，最多前 60 条。 */
+  conversations?: LocalSessionRow[]
+}
+
+/** 一条会话（一个日志文件）的用量与过程指标；只有本机口径才有这个维度。 */
+export interface LocalSessionRow {
+  /** 会话短哈希（不可逆，不含工作区路径）。 */
+  id: string
+  /** 该会话首末一次模型调用的 UTC 日。 */
+  from: string
+  to: string
+  calls: number
+  steps: number
+  turns: number
+  toolCalls: number
+  stat: Stat
+}
+
+/** 单个工具的过程指标。 */
+export interface ToolInsightRow {
+  name: string
+  calls: number
+  errors: number
+  /** 拿到 tool/result 的次数；为 0 时平均耗时无从测量，界面要显示「—」。 */
+  measured: number
+  totalMs: number
+  avgMs: number
+  /** 参数字符串的字节数合计（只量长度，不保留内容）。 */
+  paramBytes: number
+  /** 返回内容的字节数合计。 */
+  resultBytes: number
+}
+
+/**
+ * 过程指标摘要（本机口径）。全部只来自会话日志的元数据：时间戳、工具名、参数字符串长度、
+ * `isError`、job 状态与起止时间；不读也不保留任何消息正文。
+ */
+export interface InsightSummary {
+  window: { from: string; to: string; files: number }
+  /** 带完整流式时间线的模型调用数。 */
+  calls: number
+  /** step/start → 首个 stream chunk。 */
+  ttft: { avgMs: number; samples: number }
+  /** 生成耗时 ÷ 输出 token。 */
+  tpot: { avgMs: number }
+  tps: { avg: number; peak: number }
+  /** 只统计有活动的分钟（空分钟不计入平均）。 */
+  tpm: { avg: number; peak: number; minutes: number }
+  rpm: { avg: number; peak: number }
+  steps: { total: number; turns: number; avgPerTurn: number; maxPerTurn: number; buckets: number[] }
+  /** 步骤级缓存命中率分桶（0-20% … 80-100%）。 */
+  stepHitBuckets: number[]
+  /** 每条会话的明细，按 token 降序（会话表用）。 */
+  sessions: LocalSessionRow[]
+  /** 同一轮里连续出现「同名 + 同参数长度」的调用次数与最长连击。 */
+  loops: { repeatedCalls: number; maxRepeatRun: number }
+  edits: { calls: number }
+  /** 工具本身的墙钟合计（不含后台任务）。 */
+  toolWallMs: number
+  /** 工具墙钟合计（含后台任务），以及它占「工具 + 后台 + 模型调用」总时间的比例。 */
+  toolTimeMs: number
+  toolTimeShare: number
+  jobs: { total: number; killed: number; failed: number; totalMs: number }
+  tools: ToolInsightRow[]
+  toolCalls: number
+  /** 有结果事件的工具调用数（平均耗时的分母）。 */
+  toolMeasured: number
+  /** 结果内容非空的工具调用数（结果利用率 = 非空 ÷ 有结果）。 */
+  nonEmptyResults: number
+  resultNonEmptyRate: number
+  /** Token 效率比 = 输出 token ÷ 输入 token（本机口径）。 */
+  tokenEfficiency: number
+  toolErrorRate: number
+}
+
+/**
+ * 一个口径窗口的拆分数据。`stat.raw` 是五类计量项（命中 / 未命中 / 普通 prompt / 输出 / 请求），
+ * `stat.cost` 是同一批调用的五类平台金额 —— 两者能直接算占比。
+ */
+export interface BreakdownWindow {
+  stat: ScopeStat
+  currency: string
+  /** 窗口内有天缺金额（金额尚未回补或当天未结算），金额占比只是部分合计。 */
+  partial: boolean
+}
+
+/** 「拆分」页签的三个口径窗口。 */
+export interface UsageBreakdown {
+  total: BreakdownWindow
+  month: BreakdownWindow
+  today: BreakdownWindow
 }
 
 /** 月详情：`models` 按模型降序，`days` 逐日升序；没有金额数据时界面不显示 ¥ 列，避免一排 ¥0.00 误导。 */
@@ -359,6 +464,8 @@ export interface CardSourceInfo {
   otherProviders: Array<{ provider: string; tokens: number }>
   /** 金额仍是平台口径；true = 平台该窗口尚未结算完，金额偏小。 */
   costPending: boolean
+  /** 该窗口的缓存命中率（命中 ÷ 全部输入）；没有输入时为 undefined。 */
+  hitRate?: number
 }
 
 export interface CardData {
@@ -413,6 +520,15 @@ export interface AccountSummary {
 }
 
 /** 客户端向 host 请求的完整快照。 */
+/**
+ * 「今日」这张卡的日界，由客户端设置决定。
+ *
+ * `platform` = 平台日：UTC 日桶，北京 08:00 换日，含别的设备、带金额。
+ * `local` = 本机日：本机日历日 00:00 起，只有本机日志里的用量，没有金额 —— 平台账单没有日内
+ * 分辨率，切不到本机 0 点。
+ */
+export type TodayBasis = 'platform' | 'local'
+
 export interface UsageSnapshot {
   auth: AuthState
   cards: CardData[]
@@ -427,6 +543,8 @@ export interface UsageSnapshot {
     unit?: 'tokens' | 'requests' | 'money'
     /** 金额项不适用时缺省。 */
     source?: CardSourceInfo['kind']
+    /** token 项的缓存命中率（悬停时补充说明）。 */
+    hitRate?: number
   }>
   /** 是否有任一卡片使用过期缓存。 */
   stale: boolean
@@ -448,6 +566,14 @@ export interface UsageSnapshot {
      */
     sourceLabel?: string
   }
+  /** 过程指标摘录：让紧凑条与展开面板不必打开详细数据也能看到延迟/吞吐/工具状况。 */
+  insights?: {
+    ttftAvgMs: number
+    tpsAvg: number
+    toolCalls: number
+    toolErrorRate: number
+    edits: number
+  }
   /** 是否仍在后台拉取全量历史。 */
   loading: boolean
   /** 拉取进度 0..1，仅 loading 时有意义。 */
@@ -457,6 +583,11 @@ export interface UsageSnapshot {
   /** false 时界面上的金额只是部分合计（还有月份没抓到）。 */
   costComplete: boolean
   currency: string
+  /**
+   * 今日 / 当周 / 当月这三张自然日历卡用的日界。`fellBack` = 客户端要的是本机日，但本机口径
+   * 不可用，已回退平台日 —— 界面必须把这件事说出来，否则同一个位置会安静地换一种口径。
+   */
+  basis?: { kind: TodayBasis; fellBack: boolean }
   account?: AccountSummary
   /** 展示相关配置。host 端读插件配置后下发，客户端半侧因此无需自己读配置。 */
   display: {

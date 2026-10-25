@@ -8,6 +8,7 @@
  */
 
 import { RPC } from './types.js'
+import type { TodayBasis } from './types.js'
 import { TLOGS_TOKEN_REF } from './auth/credentials-store.js'
 import { isDateKey, isProjectId } from './store/project-history.js'
 import type { Logger, UsageService } from './service.js'
@@ -51,6 +52,14 @@ export const MAX_SERIES_DAYS = 3660
 /** 允许的图表范围预设。`last7` / `last30` 是滚动窗口（含今天）。 */
 const CHART_RANGES = ['all', 'custom', 'today', 'week', 'month', 'last7', 'last30'] as const
 
+/**
+ * 「今日」的日界（`platform` = 平台日 / `local` = 本机日历日）。只是个显示口径，认不出的值一律
+ * 按平台日处理：这里报错只会让一个纯展示偏好把整个快照打不开。
+ */
+function readTodayBasis(payload: Record<string, unknown>): TodayBasis | undefined {
+  return payload.todayBasis === 'local' ? 'local' : payload.todayBasis === 'platform' ? 'platform' : undefined
+}
+
 /** 把任何文本压成单行安全文本：去控制字符，防止日志注入与多行伪造。 */
 function oneLine(s: string, max = 200): string {
   return s.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max)
@@ -79,7 +88,7 @@ export function makeRpcHandler(deps: RpcDeps) {
     try {
       switch (endpoint) {
         case RPC.snapshot:
-          return ok(await service.snapshot())
+          return ok(await service.snapshot({ todayBasis: readTodayBasis(payload) }))
 
         case RPC.refresh: {
           // force=true 对应「手动点击刷新按钮强制刷新」，绕开 TTL；
@@ -104,7 +113,7 @@ export function makeRpcHandler(deps: RpcDeps) {
         case RPC.balanceWatch: {
           // 展开面板打开时 on=true、收起时 on=false。返回值就是那一刻的快照，省掉客户端
           // 紧随其后的一次 snapshot 往返。
-          return ok(await service.balanceWatch(payload.on === true))
+          return ok(await service.balanceWatch(payload.on === true, { todayBasis: readTodayBasis(payload) }))
         }
 
         case RPC.detail:

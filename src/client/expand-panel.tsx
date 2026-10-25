@@ -48,6 +48,12 @@ const SOURCE_LABEL: Record<string, MessageKey> = {
  */
 const TIME_BASIS_KEY: MessageKey = 'panel.timeBasis'
 
+/** 毫秒 → 「1.6 s」/「850 ms」；面板里只放一个短值，细节留给性能页签。 */
+function formatSeconds(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return '—'
+  return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`
+}
+
 /** Tooltip for the time-basis line: the handover hour in the machine's real time zone. */
 function dayBasisTip(t: Translator): { tip: string } {
   /** getTimezoneOffset() is UTC − local in minutes; negate it for the local offset from UTC. */
@@ -237,6 +243,8 @@ export function ExpandPanel(props: ExpandPanelProps): React.ReactElement {
   const loginAvailable = snapshot?.display.loginAvailable !== false
   /** The platform day (UTC) mapped onto the local time zone, for the tooltip. */
   const basis = dayBasisTip(t)
+  /** Which day the 「今日 / 当周 / 当月」 cards count: the host answers with the basis it used. */
+  const todayLocal = snapshot?.basis?.kind === 'local'
 
   const cycle = (index: number, card: CardData) => {
     const opts = card.options ?? []
@@ -346,10 +354,28 @@ export function ExpandPanel(props: ExpandPanelProps): React.ReactElement {
         </div>
       ) : null}
 
-      {/* Sits right below the credential source: the tooltip explains the handover hour. */}
-      <div className="tlogs-hint" title={basis.tip}>
-        {t(TIME_BASIS_KEY)}
+      {/* Sits right below the credential source: the line switches with the 「今日」 basis, since
+          the handover hour is the thing that moved. */}
+      <div className="tlogs-hint" title={todayLocal ? t('panel.dayBasis.localDay') : basis.tip}>
+        {todayLocal ? t('panel.timeBasisLocal') : t(TIME_BASIS_KEY)}
       </div>
+
+      {/* The requested basis could not be honoured (local usage off/failed): say the cards fell
+          back to the platform day instead of silently swapping the meaning of the numbers. */}
+      {snapshot?.basis?.fellBack ? <div className="tlogs-hint">{t('panel.todayLocalFallback')}</div> : null}
+
+      {/* 过程摘要：延迟/吞吐/工具，直接取自详细数据页签的那套指标。 */}
+      {snapshot?.insights ? (
+        <div className="tlogs-hint" title={t('panel.insightsTip')}>
+          {t('panel.insights', {
+            ttft: formatSeconds(snapshot.insights.ttftAvgMs),
+            tps: snapshot.insights.tpsAvg.toFixed(0),
+            calls: formatFull(snapshot.insights.toolCalls),
+            rate: (snapshot.insights.toolErrorRate * 100).toFixed(1),
+            edits: formatFull(snapshot.insights.edits),
+          })}
+        </div>
+      ) : null}
 
       {/* Unavailable local usage has to be stated: the cards then fall back to the platform
           bill, whose current day waits for settlement, so "today 0" would appear silently. */}

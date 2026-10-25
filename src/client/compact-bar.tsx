@@ -39,6 +39,7 @@ export function CompactBar(props: CompactBarProps): React.ReactElement {
     value: number,
     unit?: 'tokens' | 'requests' | 'money',
     source?: 'platform' | 'local' | 'merged',
+    hitRate?: number,
   ): string => {
     // No room for a scope badge here, but hovering still has to say when the number is not
     // pure platform billing.
@@ -48,9 +49,10 @@ export function CompactBar(props: CompactBarProps): React.ReactElement {
         : source === 'merged'
           ? t('bar.noteMerged')
           : ''
-    if (unit === 'requests') return t('bar.titleRequests', { label, value: formatFull(value), note })
+    const hit = hitRate === undefined ? '' : t('bar.hitRate', { pct: (hitRate * 100).toFixed(1) })
+    if (unit === 'requests') return t('bar.titleRequests', { label, value: formatFull(value), note: note + hit })
     if (unit === 'money') return t('bar.titleMoney', { label, value: formatMoneyFull(value) })
-    return t('bar.titleTokens', { label, value: formatFull(value), note })
+    return t('bar.titleTokens', { label, value: formatFull(value), note: note + hit })
   }
 
   return (
@@ -69,7 +71,7 @@ export function CompactBar(props: CompactBarProps): React.ReactElement {
               <span
                 key={`${m.scope}-${m.label}-${i}`}
                 className="tlogs-metric"
-                title={fullTitle(m.label, m.value, m.unit, m.source)}
+                title={fullTitle(m.label, m.value, m.unit, m.source, m.hitRate)}
               >
                 <span className="tlogs-metric-label">{m.label}</span>
                 <span

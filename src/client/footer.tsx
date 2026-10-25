@@ -50,6 +50,12 @@ export function TlogsFooter(props: TlogsFooterProps): React.ReactElement {
   const display = store.snapshot?.display
   const numberFormat = display?.numberFormat ?? props.numberFormat ?? 'short'
   const enableDetailView = display?.enableDetailView ?? props.enableDetailView !== false
+  /**
+   * The 「拆分」 tab's project table reads the options the project card already carries. Only that
+   * card has `options`, so the lookup doubles as the "is there a project dimension" check.
+   */
+  const projectOptions =
+    store.snapshot?.cards.find((c) => (c.options?.length ?? 0) > 0)?.options ?? []
 
   // Balance polls on its own only while the panel is on screen: the host loop is driven by this
   // effect (cleanup covers collapsing and unmount alike), never by the plugin merely being loaded.
@@ -124,6 +130,8 @@ export function TlogsFooter(props: TlogsFooterProps): React.ReactElement {
           loading={store.busy}
           busy={store.busy}
           error={store.error}
+          projects={projectOptions}
+          numberFormat={numberFormat}
           onClose={() => setDetailOpen(false)}
           onRefresh={refresh}
           onSelectMonth={(year, month) => void store.loadMonth(year, month)}

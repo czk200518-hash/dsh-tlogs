@@ -29,8 +29,9 @@ import { join } from 'node:path'
 import * as zlib from 'node:zlib'
 
 import { addInto } from '../api/parser.js'
-import { dateKey } from './dates.js'
-import { emptyStat, TOKEN_TYPES, type Stat } from '../types.js'
+import { dateKey, localDateKey } from './dates.js'
+import { InsightsAccumulator, summarizeInsights, type PerFileInsights } from './session-insights.js'
+import { emptyStat, TOKEN_TYPES, type InsightSummary, type Stat } from '../types.js'
 
 /** Zstandard frame 魔数，小端读出的 0xFD2FB528。 */
 const ZSTD_MAGIC = 0xfd2fb528
@@ -83,8 +84,10 @@ export interface LocalUsageReport {
   available: boolean
   /** 不可用或降级的原因，供 UI 与日志说明。 */
   reason?: string
-  /** 只保留最近 `maxDays` 天，升序。 */
+  /** 只保留最近 `maxDays` 天，升序。日键为 UTC 日（与平台日桶同口径）。 */
   days: LocalDayUsage[]
+  /** 同一批样本按本机日历日分桶的结果，只有「今日（本机日）」口径会读它。 */
+  localDays: LocalDayUsage[]
   /** 参与聚合的日志文件数。 */
   totalFiles: number
   /** 本次真正重新解析的文件数。 */
@@ -93,6 +96,8 @@ export interface LocalUsageReport {
   updatedAt: number
   /** 实际命中的候选目录标签（例如 `DSH_HOME 上两级/sessions`），供诊断展示。 */
   sourceLabel?: string
+  /** 「性能」「工具」页签的过程指标；还没扫完或日志里没有调用时缺省。 */
+  insights?: InsightSummary
 }
 
 /** 单文件里某个供应商的聚合（含按模型拆分）。 */
@@ -101,7 +106,7 @@ interface ProviderAgg {
   models: Map<string, Stat>
 }
 
-/** 单个文件的解析结果：`UTC 日 → provider → 聚合`。 */
+/** 单个文件的解析结果：`日 → provider → 聚合`。按 UTC 日或本机日分桶时结构相同。 */
 type FileDays = Map<string, Map<string, ProviderAgg>>
 
 interface FileRecord {
@@ -109,7 +114,12 @@ interface FileRecord {
   key: string
   size: number
   mtimeMs: number
+  /** UTC 日桶。 */
   days: FileDays
+  /** 本机日桶。 */
+  localDays: FileDays
+  /** 过程指标（只驻内存：重启后会重解析一次日志，不值得为它把缓存撑大）。 */
+  insights?: PerFileInsights
   /**
    * 原始路径只在内存里保留：落盘不留路径（会话目录名编码了工作区路径），因此重启后恢复出来
    * 的记录没有 path，会走一次重解析。
@@ -132,6 +142,8 @@ export interface SessionUsageOptions {
   maxDecompressBytesPerFile?: number
   /** 测试用。 */
   now?: () => number
+  /** 测试用：把「本机日」固定成某个时区，避免测试结果随机器时区变化。 */
+  localDayKey?: (d: Date) => string
 }
 
 /** 路径的不可逆短哈希（与 `publicProjectId` 同一手法：落盘不留路径）。 */
@@ -308,22 +320,29 @@ function providerName(v: unknown): string | undefined {
 }
 
 /**
- * 回放一份会话日志，得到 `UTC 日 → provider → Stat`。
+ * 回放一份会话日志，得到 `UTC 日 → provider → Stat` 与 `本机日 → provider → Stat` 两套桶。
+ *
+ * 两套键的日界不同（UTC 08:00 / 本机 00:00，见 `store/dates.ts`）：平台账单只有 UTC 日粒度，
+ * 合并必须用 UTC 桶；「本机今天用了多少」是本地日历日的问题，只能用样本时间戳重新分桶。
  *
  * 状态机与 DSH 的 costUsage 投影对齐：`request/header` 切换当前 provider/model；usage 样本按
  * `(turn, step)` 去重（后者替换前者）；`time < createdAt` 的 fork 种子事件整体剔除。
  */
 export async function replaySessionUsage(
   path: string,
-  options: { maxDecompressBytesPerFile?: number } = {},
-): Promise<FileDays> {
+  options: { maxDecompressBytesPerFile?: number; localDayKey?: (d: Date) => string; fileKey?: string } = {},
+): Promise<{ days: FileDays; localDays: FileDays; insights: PerFileInsights }> {
+  const localDayKey = options.localDayKey ?? localDateKey
   /** `turn:step` → 该步最终样本。 */
-  const samples = new Map<string, { day: string; provider: string; model: string; stat: Stat }>()
+  const samples = new Map<string, { at: number; provider: string; model: string; stat: Stat }>()
+  /** 同一次读取顺手聚合过程指标：时间戳/工具名/长度，不碰正文。 */
+  const insight = new InsightsAccumulator()
   let createdAt = 0
   let provider = 'unknown'
   let model = 'unknown'
 
   for await (const rec of iterateSessionRecords(path, options)) {
+    insight.push(rec)
     const type = rec.type
     if (type === 'session') {
       const created = Number(rec.createdAt)
@@ -382,19 +401,32 @@ export async function replaySessionUsage(
     stat.REQUEST = 1
 
     samples.set(`${turn}:${step}`, {
-      day: dateKey(new Date(at)),
+      at,
       provider: sampleProvider,
       model: providerName(src?.model) ?? model,
       stat,
     })
   }
 
+  return {
+    days: bucketBy(samples.values(), (s) => dateKey(new Date(s.at))),
+    localDays: bucketBy(samples.values(), (s) => localDayKey(new Date(s.at))),
+    insights: { ...insight.build(), ...(options.fileKey ? { id: options.fileKey.slice(0, 8) } : {}) },
+  }
+}
+
+/** 把同一批样本分成 `日 → provider → Stat`。两套日键各调一次，统计口径因此完全一致。 */
+function bucketBy<T extends { provider: string; model: string; stat: Stat }>(
+  samples: Iterable<T>,
+  dayOf: (s: T) => string,
+): FileDays {
   const days: FileDays = new Map()
-  for (const s of samples.values()) {
-    let byProvider = days.get(s.day)
+  for (const s of samples) {
+    const day = dayOf(s)
+    let byProvider = days.get(day)
     if (!byProvider) {
       byProvider = new Map()
-      days.set(s.day, byProvider)
+      days.set(day, byProvider)
     }
     let agg = byProvider.get(s.provider)
     if (!agg) {
@@ -469,12 +501,15 @@ export class SessionUsageStore {
   private readonly maxDays: number
   private readonly budget: number
   private readonly now: () => number
+  /** 本机日键（测试注入固定时区用）。 */
+  private readonly localDayKey: (d: Date) => string
   private readonly files = new Map<string, FileRecord>()
   private inflight: Promise<LocalUsageReport> | undefined
   private report: LocalUsageReport = {
     available: false,
     reason: 'not-scanned',
     days: [],
+    localDays: [],
     totalFiles: 0,
     parsedFiles: 0,
     updatedAt: 0,
@@ -494,6 +529,7 @@ export class SessionUsageStore {
     this.maxDays = Math.max(2, Math.trunc(opts.maxDays ?? DEFAULT_MAX_DAYS))
     this.budget = opts.maxDecompressBytesPerFile ?? DEFAULT_MAX_DECOMPRESSED_PER_FILE
     this.now = opts.now ?? (() => Date.now())
+    this.localDayKey = opts.localDayKey ?? localDateKey
   }
 
   /** 最近一次扫描结果，供 snapshot 同步读取。 */
@@ -550,6 +586,8 @@ export class SessionUsageStore {
           // 对外只给稳定的原因码；候选目录的绝对路径只进日志，不下发浏览器。
           reason: 'no-session-logs',
           days: [],
+          localDays: [],
+          insights: undefined,
           totalFiles: 0,
           parsedFiles: 0,
           updatedAt: started,
@@ -568,8 +606,10 @@ export class SessionUsageStore {
       this.report = {
         ...this.report,
         available: false,
+        insights: undefined,
         reason: `sessions-dir-unreadable: ${e instanceof Error ? e.message : String(e)}`,
         days: [],
+        localDays: [],
         updatedAt: started,
       }
       return this.report
@@ -580,6 +620,8 @@ export class SessionUsageStore {
         available: false,
         reason: 'no-session-logs',
         days: [],
+        localDays: [],
+        insights: undefined,
         totalFiles: 0,
         parsedFiles: 0,
         updatedAt: started,
@@ -599,8 +641,12 @@ export class SessionUsageStore {
       const known = this.files.get(key)
       if (known && known.size === f.size && known.mtimeMs === f.mtimeMs && known.path === f.path) continue
       try {
-        const days = await replaySessionUsage(f.path, { maxDecompressBytesPerFile: this.budget })
-        this.files.set(key, { key, size: f.size, mtimeMs: f.mtimeMs, days, path: f.path })
+        const { days, localDays, insights } = await replaySessionUsage(f.path, {
+          maxDecompressBytesPerFile: this.budget,
+          localDayKey: this.localDayKey,
+          fileKey: key,
+        })
+        this.files.set(key, { key, size: f.size, mtimeMs: f.mtimeMs, days, localDays, insights, path: f.path })
         parsedFiles += 1
       } catch (e) {
         failures += 1
@@ -614,7 +660,9 @@ export class SessionUsageStore {
     // 已经不在候选集里的文件（被清理 / 超出窗口）丢弃其贡献。
     for (const key of [...this.files.keys()]) if (!seen.has(key)) this.files.delete(key)
 
-    const days = this.aggregate()
+    const days = this.aggregate((r) => r.days)
+    const localDays = this.aggregate((r) => r.localDays)
+    const insights = this.insightsReport(days)
     const anyData = days.length > 0
     const available = anyData || failures < candidates.length
     let reason: string | undefined
@@ -633,6 +681,8 @@ export class SessionUsageStore {
       available,
       ...(reason ? { reason } : {}),
       days,
+      localDays,
+      ...(insights ? { insights } : {}),
       totalFiles: candidates.length,
       parsedFiles,
       updatedAt: started,
@@ -647,12 +697,32 @@ export class SessionUsageStore {
     return this.report
   }
 
-  /** 把各文件的逐日贡献汇总成逐日用量（供应商 + 供应商下的模型，均按 token 降序）。 */
-  private aggregate(): LocalDayUsage[] {
+  /**
+   * 把各文件的过程指标合并成一份摘要。只覆盖真的解析过（有 insights）的文件；没有进度的文件
+   * （例如日志结构升级前的旧扫描结果）不计入，但也不会把别人的数拉低。
+   */
+  private insightsReport(days: LocalDayUsage[]): InsightSummary | undefined {
+    const files = [...this.files.values()]
+      .map((r) => r.insights)
+      .filter((x): x is PerFileInsights => x !== undefined)
+    if (files.length === 0 || days.length === 0) return undefined
+    if (files.reduce((a, f) => a + f.calls, 0) === 0) return undefined
+    return summarizeInsights(files, {
+      from: days[0]!.date,
+      to: days[days.length - 1]!.date,
+      files: files.length,
+    })
+  }
+
+  /**
+   * 把各文件的逐日贡献汇总成逐日用量（供应商 + 供应商下的模型，均按 token 降序）。
+   * `pick` 决定取哪一套日桶：UTC 日（与平台对齐）或本机日（「今日」可切片成本地日历日）。
+   */
+  private aggregate(pick: (r: FileRecord) => FileDays): LocalDayUsage[] {
     const byDate = new Map<string, Map<string, ProviderAgg>>()
     const cutoff = dateKey(new Date(this.now() - (this.maxDays - 1) * 86_400_000))
     for (const rec of this.files.values()) {
-      for (const [date, byProvider] of rec.days) {
+      for (const [date, byProvider] of pick(rec)) {
         if (date < cutoff) continue
         let target = byDate.get(date)
         if (!target) {
@@ -702,7 +772,8 @@ export class SessionUsageStore {
       key: string
       size: number
       mtimeMs: number
-      days: Array<[string, Array<[string, { stat: Stat; models: Array<[string, Stat]> }]>]>
+      days: SerializedDays
+      localDays: SerializedDays
     }>
   } {
     return {
@@ -710,16 +781,8 @@ export class SessionUsageStore {
         key: r.key,
         size: r.size,
         mtimeMs: r.mtimeMs,
-        days: [...r.days.entries()].map(([date, byProvider]) => [
-          date,
-          [...byProvider.entries()].map(
-            ([provider, agg]) =>
-              [provider, { stat: agg.stat, models: [...agg.models.entries()] }] as [
-                string,
-                { stat: Stat; models: Array<[string, Stat]> },
-              ],
-          ),
-        ]),
+        days: dumpDays(r.days),
+        localDays: dumpDays(r.localDays),
       })),
     }
   }
@@ -728,7 +791,8 @@ export class SessionUsageStore {
    * 从落盘 JSON 恢复。返回恢复的文件条数。
    *
    * 只接受合法形状；坏缓存不该让插件起不来（与项目其它缓存同一约定）。兼容没有 `models` 的
-   * 旧缓存（那时只按供应商存）。
+   * 旧缓存（那时只按供应商存），也兼容没有 `localDays` 的缓存：那批记录会因为 `path` 未知而
+   * 在下次扫描时全部重解析，本机日桶随之补齐。
    */
   load(data: unknown): number {
     const files = (data as { files?: unknown } | undefined)?.files
@@ -736,58 +800,24 @@ export class SessionUsageStore {
     let restored = 0
     for (const raw of files) {
       if (!raw || typeof raw !== 'object') continue
-      const r = raw as { key?: unknown; size?: unknown; mtimeMs?: unknown; days?: unknown }
+      const r = raw as { key?: unknown; size?: unknown; mtimeMs?: unknown; days?: unknown; localDays?: unknown }
       const key = typeof r.key === 'string' ? r.key : ''
       if (!/^[0-9a-f]{16}$/.test(key)) continue
       const size = Number(r.size)
       const mtimeMs = Number(r.mtimeMs)
       if (!Number.isFinite(size) || !Number.isFinite(mtimeMs)) continue
-      const days: FileDays = new Map()
-      if (Array.isArray(r.days)) {
-        for (const entry of r.days) {
-          if (!Array.isArray(entry) || entry.length !== 2) continue
-          const date = typeof entry[0] === 'string' ? entry[0] : ''
-          if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue
-          const byProvider = new Map<string, ProviderAgg>()
-          if (Array.isArray(entry[1])) {
-            for (const p of entry[1]) {
-              if (!Array.isArray(p) || p.length !== 2) continue
-              const provider = typeof p[0] === 'string' ? p[0] : ''
-              const payload = p[1] as { stat?: unknown; models?: unknown } | Stat | undefined
-              // 旧缓存：直接是 Stat；新缓存：{ stat, models }。
-              const statRaw =
-                payload && typeof payload === 'object' && 'stat' in (payload as Record<string, unknown>)
-                  ? (payload as { stat?: unknown }).stat
-                  : payload
-              const stat = normalizeStat(statRaw)
-              if (provider.length === 0 || !stat) continue
-              const models = new Map<string, Stat>()
-              const modelsRaw = (payload as { models?: unknown } | undefined)?.models
-              if (Array.isArray(modelsRaw)) {
-                for (const m of modelsRaw) {
-                  if (!Array.isArray(m) || m.length !== 2) continue
-                  const model = typeof m[0] === 'string' ? m[0] : ''
-                  const mstat = normalizeStat(m[1])
-                  if (model.length === 0 || !mstat) continue
-                  models.set(model, mstat)
-                }
-              }
-              byProvider.set(provider, { stat, models })
-            }
-          }
-          if (byProvider.size > 0) days.set(date, byProvider)
-        }
-      }
       // path 未知（落盘不留路径）：size/mtime 命中时才会被复用，否则会重新解析。
-      this.files.set(key, { key, size, mtimeMs, days })
+      this.files.set(key, { key, size, mtimeMs, days: parseDays(r.days), localDays: parseDays(r.localDays) })
       restored += 1
     }
     if (restored > 0) {
-      const days = this.aggregate()
+      const days = this.aggregate((x) => x.days)
+      const localDays = this.aggregate((x) => x.localDays)
       this.report = {
         available: days.length > 0,
         ...(days.length > 0 ? {} : { reason: 'restored-empty' }),
         days,
+        localDays,
         totalFiles: restored,
         parsedFiles: 0,
         updatedAt: this.now(),
@@ -798,8 +828,72 @@ export class SessionUsageStore {
 
   clear(): void {
     this.files.clear()
-    this.report = { available: false, reason: 'not-scanned', days: [], totalFiles: 0, parsedFiles: 0, updatedAt: 0 }
+    this.report = {
+      available: false,
+      reason: 'not-scanned',
+      days: [],
+      localDays: [],
+      totalFiles: 0,
+      parsedFiles: 0,
+      updatedAt: 0,
+    }
   }
+}
+
+/** 一套日桶的落盘形状。 */
+type SerializedDays = Array<[string, Array<[string, { stat: Stat; models: Array<[string, Stat]> }]>]>
+
+function dumpDays(days: FileDays): SerializedDays {
+  return [...days.entries()].map(([date, byProvider]) => [
+    date,
+    [...byProvider.entries()].map(
+      ([provider, agg]) =>
+        [provider, { stat: agg.stat, models: [...agg.models.entries()] }] as [
+          string,
+          { stat: Stat; models: Array<[string, Stat]> },
+        ],
+    ),
+  ])
+}
+
+/** 解析一套日桶；形状不认识的部分逐条跳过，绝不抛出。 */
+function parseDays(raw: unknown): FileDays {
+  const days: FileDays = new Map()
+  if (!Array.isArray(raw)) return days
+  for (const entry of raw) {
+    if (!Array.isArray(entry) || entry.length !== 2) continue
+    const date = typeof entry[0] === 'string' ? entry[0] : ''
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue
+    const byProvider = new Map<string, ProviderAgg>()
+    if (Array.isArray(entry[1])) {
+      for (const p of entry[1]) {
+        if (!Array.isArray(p) || p.length !== 2) continue
+        const provider = typeof p[0] === 'string' ? p[0] : ''
+        const payload = p[1] as { stat?: unknown; models?: unknown } | Stat | undefined
+        // 旧缓存：直接是 Stat；新缓存：{ stat, models }。
+        const statRaw =
+          payload && typeof payload === 'object' && 'stat' in (payload as Record<string, unknown>)
+            ? (payload as { stat?: unknown }).stat
+            : payload
+        const stat = normalizeStat(statRaw)
+        if (provider.length === 0 || !stat) continue
+        const models = new Map<string, Stat>()
+        const modelsRaw = (payload as { models?: unknown } | undefined)?.models
+        if (Array.isArray(modelsRaw)) {
+          for (const m of modelsRaw) {
+            if (!Array.isArray(m) || m.length !== 2) continue
+            const model = typeof m[0] === 'string' ? m[0] : ''
+            const mstat = normalizeStat(m[1])
+            if (model.length === 0 || !mstat) continue
+            models.set(model, mstat)
+          }
+        }
+        byProvider.set(provider, { stat, models })
+      }
+    }
+    if (byProvider.size > 0) days.set(date, byProvider)
+  }
+  return days
 }
 
 /**

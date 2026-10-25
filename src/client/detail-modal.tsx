@@ -13,7 +13,9 @@ import { formatFull, formatMoneyFull, formatMoneyShort, formatNumber, localReaso
 import { moneyTotal } from '../types.js'
 import { StatTable } from './detail-view.js'
 import { ChartPanel } from './chart-panel.js'
+import { BreakdownView } from './breakdown-view.js'
 import { SettingsPanel } from './settings-panel.js'
+import { ConversationsView, PerformanceView, ToolsView } from './insights-view.js'
 import { useT, type MessageKey, type Translator } from './i18n/index.js'
 import type { DetailData, MonthDetail, SeriesQuery, ScopeStat, StatRow, UsageSeries } from '../types.js'
 
@@ -25,6 +27,9 @@ export interface DetailModalProps {
   loading: boolean
   busy: boolean
   error?: string | null
+  /** 快照里的项目选项（「拆分」页签的项目表），本机口径、无金额。 */
+  projects: Array<{ id: string; label: string; stat: ScopeStat }>
+  numberFormat: 'full' | 'short'
   onClose: () => void
   onRefresh: () => void
   /** Ask for the month the calendar should show; the host fetches that month's daily detail. */
@@ -33,7 +38,19 @@ export interface DetailModalProps {
   onLoadSeries: (query: SeriesQuery) => void
 }
 
-type Tab = 'calendar' | 'charts' | 'models' | 'providers' | 'years' | 'months' | 'days' | 'settings'
+type Tab =
+  | 'calendar'
+  | 'charts'
+  | 'breakdown'
+  | 'models'
+  | 'providers'
+  | 'performance'
+  | 'tools'
+  | 'sessions'
+  | 'years'
+  | 'months'
+  | 'days'
+  | 'settings'
 
 /**
  * The tab table holds keys, not text: labels have to follow the language, so they are resolved
@@ -45,8 +62,12 @@ type Tab = 'calendar' | 'charts' | 'models' | 'providers' | 'years' | 'months' |
 const TABS: Array<{ id: Tab; labelKey: MessageKey }> = [
   { id: 'calendar', labelKey: 'tab.calendar' },
   { id: 'charts', labelKey: 'tab.charts' },
+  { id: 'breakdown', labelKey: 'tab.breakdown' },
   { id: 'models', labelKey: 'tab.models' },
   { id: 'providers', labelKey: 'tab.providers' },
+  { id: 'performance', labelKey: 'tab.performance' },
+  { id: 'tools', labelKey: 'tab.tools' },
+  { id: 'sessions', labelKey: 'tab.sessions' },
   { id: 'years', labelKey: 'tab.years' },
   { id: 'months', labelKey: 'tab.months' },
   { id: 'days', labelKey: 'tab.days' },
@@ -335,7 +356,7 @@ function Calendar(props: {
 }
 
 export function DetailModal(props: DetailModalProps): React.ReactElement {
-  const { detail, monthDetail, series, seriesLoading, loading, busy, error, onClose, onRefresh, onSelectMonth, onLoadSeries } = props
+  const { detail, monthDetail, series, seriesLoading, loading, busy, error, projects, numberFormat, onClose, onRefresh, onSelectMonth, onLoadSeries } = props
   const [tab, setTab] = React.useState<Tab>('calendar')
   const t = useT()
 
@@ -409,6 +430,40 @@ export function DetailModal(props: DetailModalProps): React.ReactElement {
               loading={seriesLoading}
               error={error}
               onLoad={onLoadSeries}
+            />
+          ) : tab === 'breakdown' ? (
+            <BreakdownView
+              breakdown={detail?.breakdown}
+              projects={projects}
+              months={detail?.months ?? []}
+              monthDetail={monthDetail}
+              onSelectMonth={onSelectMonth}
+              currency={detail?.breakdown?.total.currency ?? 'CNY'}
+              numberFormat={numberFormat}
+              unitPrices={detail?.unitPrices}
+              insights={detail?.insights}
+            />
+          ) : tab === 'performance' ? (
+            <PerformanceView
+              insights={detail?.insights}
+              unavailable={detail?.insightsUnavailable}
+              reasonLabel={(r) => localReasonLabel(r)}
+              numberFormat={numberFormat}
+            />
+          ) : tab === 'sessions' ? (
+            <ConversationsView
+              insights={detail?.insights}
+              unavailable={detail?.insightsUnavailable}
+              reasonLabel={(r) => localReasonLabel(r)}
+              numberFormat={numberFormat}
+              unitPrices={detail?.unitPrices}
+            />
+          ) : tab === 'tools' ? (
+            <ToolsView
+              insights={detail?.insights}
+              unavailable={detail?.insightsUnavailable}
+              reasonLabel={(r) => localReasonLabel(r)}
+              numberFormat={numberFormat}
             />
           ) : tab === 'providers' ? (
             <div>

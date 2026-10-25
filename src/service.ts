@@ -18,6 +18,7 @@ import type { ResolvedConfig } from './config.js'
 import {
   HistoryStore,
   enumerateMonths,
+  hasCachedMonthData,
   localYearMonth,
   monthIndex,
   monthKey,
@@ -25,7 +26,7 @@ import {
 } from './store/history.js'
 import { publicProjectId } from './store/project.js'
 import { isDateKey, type ProjectHistoryStore } from './store/project-history.js'
-import { dateKey, inWindow, monthWindow, rollingWindow, todayWindow, weekWindow } from './store/dates.js'
+import { dateKey, inWindow, localDateKey, monthWindow, rollingWindow, todayWindow, weekWindow } from './store/dates.js'
 import { tokenTotal, type SessionUsageStore } from './store/session-usage.js'
 import { isDeepseekProvider, mergeTotal, mergeWindow, type MergedWindow } from './store/usage-merge.js'
 import {
@@ -39,10 +40,12 @@ import {
 import {
   emptyMoney,
   emptyStat,
+  TOKEN_TYPES,
   moneyTotal,
   ROLLING_DAYS,
   type AccountSummary,
   type AuthState,
+  type BreakdownWindow,
   type CardData,
   type CardSourceInfo,
   type ChartRange,
@@ -57,7 +60,9 @@ import {
   type SeriesProject,
   type Stat,
   type StatRow,
+  type TodayBasis,
   type UsageError,
+  type UsageBreakdown,
   type UsageScope,
   type UsageSeries,
   type UsageSnapshot,
@@ -128,6 +133,8 @@ export interface UsageServiceOptions {
   logger?: Logger
   /** 时钟与 fetch 可注入，便于测试。 */
   now?: () => Date
+  /** 「本机日」的日键（测试可注入固定时区；缺省按运行机器的时区，见 `store/dates.ts`）。 */
+  localDayKey?: (d: Date) => string
   fetchImpl?: typeof fetch
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>
   /** 触发去抖落盘。 */
@@ -151,6 +158,13 @@ export interface UsageServiceOptions {
 
 /** 一次刷新的原因，决定 TTL 判定。 */
 export type RefreshReason = 'mount' | 'expand' | 'manual' | 'scheduled'
+
+/**
+ * `snapshot()` 入参：客户端可以按自己的设置选择「今日」的日界（见 `types.ts` 的 `TodayBasis`）。
+ */
+export interface SnapshotOptions {
+  todayBasis?: TodayBasis
+}
 
 export type ProgressFn = (done: number, total: number) => void
 
@@ -412,7 +426,13 @@ export class UsageService {
       } else {
         const e = result.error
         anyError = e
-        this.history.set({ year: m.year, month: m.month, stat: emptyStat(), models: {}, error: e })
+        // 失败 ≠ 这个月没有用量：保留上一次成功拉取的行（统计 / 逐日 / 金额），只挂上错误标记。
+        // 直接把行换成空 Stat 会连逐日明细一起抹掉，而落盘又把这个空行写进磁盘 —— 一次网络抖动
+        // 就能让「今日」「当月」读成 0，且不会自行恢复。
+        const prior = this.history.get(m.year, m.month)
+        this.history.set(
+          prior ? { ...prior, error: e } : { year: m.year, month: m.month, stat: emptyStat(), models: {}, error: e },
+        )
         this.log('warn', `tlogs: ${key} 拉取失败 —— ${e.message}`)
 
         if (isAuthError(e)) {
@@ -512,10 +532,10 @@ export class UsageService {
    * 开关余额轮询，并返回开关后的快照。由展开面板驱动：打开即启动并立刻查一次（面板刚出现
    * 时不能等 5 秒才显示正确的余额），收起即停 —— 所以没人看着的时候这条通道完全不产生请求。
    */
-  async balanceWatch(on: boolean): Promise<UsageSnapshot> {
+  async balanceWatch(on: boolean, opts: SnapshotOptions = {}): Promise<UsageSnapshot> {
     if (on) await this.startBalanceWatch()
     else this.stopBalanceWatch()
-    return this.snapshot()
+    return this.snapshot(opts)
   }
 
   private async startBalanceWatch(): Promise<void> {
@@ -584,7 +604,8 @@ export class UsageService {
     const out: Array<{ date: string; stat: Stat; cost?: Money }> = []
     for (const m of enumerateMonths(startM, endM)) {
       const row = this.history.get(m.year, m.month)
-      if (row?.days && !row.error) out.push(...row.days)
+      // 失败重拉的行保留着上一次成功的逐日明细：没有它，「今日/当月」会在一次网络抖动后读成 0。
+      if (row?.days) out.push(...row.days)
     }
     return out
   }
@@ -618,6 +639,8 @@ export class UsageService {
 
   /** 把合并结果里的「这份数字是谁给的」转成下发给浏览器的形状。 */
   private sourceInfo(m: MergedWindow): CardSourceInfo {
+    const raw = m.stat.raw
+    const input = raw.PROMPT_TOKEN + raw.PROMPT_CACHE_HIT_TOKEN + raw.PROMPT_CACHE_MISS_TOKEN
     return {
       kind: m.source,
       platformTokens: tokenTotal(m.platform.raw),
@@ -626,6 +649,7 @@ export class UsageService {
       // 下发展示名（`xiaomi` → `小米`），tooltip 里直接可读。
       otherProviders: m.otherProviders.map((p) => ({ provider: providerLabel(p.provider), tokens: p.tokens })),
       costPending: m.costPending,
+      ...(input > 0 ? { hitRate: raw.PROMPT_CACHE_HIT_TOKEN / input } : {}),
     }
   }
 
@@ -633,7 +657,7 @@ export class UsageService {
     return { scope, label, stat: w.stat, stale: this.stale, source: this.sourceInfo(w) }
   }
 
-  private async buildCards(): Promise<CardData[]> {
+  private async buildCards(basis: TodayBasis): Promise<{ cards: CardData[]; fellBack: boolean }> {
     const now = this.now()
     const cards: CardData[] = [
       this.windowCard('total', '总消耗 Token', this.mergedTotal()),
@@ -657,14 +681,86 @@ export class UsageService {
       )
     }
 
+    const local = basis === 'local' ? this.localBasisCards(now) : undefined
+
     // 今日、当周、当月、近 7 天、近 30 天：滚动窗口与自然日历刻意并列，两者在月初/周一附近会明显不同，摆在一起才能解释「为什么数字不一样」。
-    cards.push(this.windowCard('today', '今日消耗', this.mergedWindow(todayWindow(now))))
-    cards.push(this.windowCard('week', '当周消耗', this.mergedWindow(weekWindow(now))))
-    cards.push(this.windowCard('month', '当月消耗', this.mergedWindow(monthWindow(now))))
+    cards.push(local?.today ?? this.windowCard('today', '今日消耗', this.mergedWindow(todayWindow(now))))
+    cards.push(local?.week ?? this.windowCard('week', '当周消耗', this.mergedWindow(weekWindow(now))))
+    cards.push(local?.month ?? this.windowCard('month', '当月消耗', this.mergedWindow(monthWindow(now))))
     cards.push(this.windowCard('last7', '近 7 天', this.mergedWindow(rollingWindow(ROLLING_DAYS.last7, now))))
     cards.push(this.windowCard('last30', '近 30 天', this.mergedWindow(rollingWindow(ROLLING_DAYS.last30, now))))
 
-    return cards
+    return { cards, fellBack: local === undefined && basis === 'local' }
+  }
+
+  /**
+   * 本机日口径下的三张自然日历卡：今日（本机 0 点起）、当周（本机周一 0 点起）、当月（本机 1 日
+   * 0 点起）。只读本机会话日志里按本机日历日分好的桶。
+   *
+   * 为什么不并入平台账单：平台的 `days[]` 只有 UTC 日粒度（北京 08:00 换日），切不出本机 0 点起
+   * 的那一段，任何凑法都会把 8 小时的用量记错位置。所以这三张卡明确只代表本机 —— 换来的是
+   * 「跨过 08:00 / 周一 / 1 日不会跳变」，代价是看不到别的设备、也没有金额。
+   *
+   * 本机口径整体不可用（配置关闭 / 扫描失败 / 运行时没有 zstd）时返回 undefined，调用方回退平台
+   * 日卡片，并由 `snapshot.basis.fellBack` 让界面把这件事说出来，而不是安静地换一种口径。
+   */
+  private localBasisCards(now: Date): { today: CardData; week: CardData; month: CardData } | undefined {
+    const report = this.config.localUsage ? this.opts.localUsage?.current : undefined
+    if (!report || !report.available) return undefined
+    const dayKey = this.opts.localDayKey ?? localDateKey
+    const todayKey = dayKey(now)
+
+    // 本机周一 0 点与本月 1 日 0 点：先用本地日期算，再取日键 —— 不能拿 UTC 的周一/1 日。
+    const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    monday.setDate(monday.getDate() - (monday.getDay() === 0 ? 6 : monday.getDay() - 1))
+    const weekFrom = dayKey(monday)
+    const monthFrom = dayKey(new Date(now.getFullYear(), now.getMonth(), 1))
+
+    return {
+      today: this.localWindowCard('today', '今日消耗 · 本机', todayKey, todayKey),
+      week: this.localWindowCard('week', '当周消耗 · 本机', weekFrom, todayKey),
+      month: this.localWindowCard('month', '当月消耗 · 本机', monthFrom, todayKey),
+    }
+  }
+
+  /** 本机口径的窗口卡片：按本机日键求和（`from`/`to` 都是本机日历日键，含首尾）。 */
+  private localWindowCard(scope: 'today' | 'week' | 'month', label: string, from: string, to: string): CardData {
+    const stat = emptyStat()
+    const deepseek = emptyStat()
+    const others = new Map<string, Stat>()
+    for (const day of this.opts.localUsage?.current.localDays ?? []) {
+      if (day.date < from || day.date > to) continue
+      addInto(stat, day.stat)
+      for (const p of day.byProvider) {
+        if (isDeepseekProvider(p.provider)) {
+          addInto(deepseek, p.stat)
+          continue
+        }
+        let cur = others.get(p.provider)
+        if (!cur) {
+          cur = emptyStat()
+          others.set(p.provider, cur)
+        }
+        addInto(cur, p.stat)
+      }
+    }
+    return {
+      scope,
+      label,
+      stat: toScopeStat(stat),
+      stale: this.stale,
+      source: {
+        kind: 'local',
+        platformTokens: 0,
+        localTokens: tokenTotal(stat),
+        localDeepseekTokens: tokenTotal(deepseek),
+        otherProviders: [...others.entries()]
+          .map(([provider, s]) => ({ provider: providerLabel(provider), tokens: tokenTotal(s) }))
+          .filter((p) => p.tokens > 0)
+          .sort((a, b) => b.tokens - a.tokens),
+        costPending: false,
+      },
+    }
   }
 
   /** 读取项目内某个对象的用量（供卡片切换）。 */
@@ -800,7 +896,9 @@ export class UsageService {
     for (const m of enumerateMonths(start, end)) {
       const key = monthKey(m.year, m.month)
       const row = this.history.get(m.year, m.month)
-      const ok = row !== undefined && !row.error
+      // 失败过的月份读的是上一次成功的缓存：照常画出来（标「不完整」），否则一次抖动就让曲线缺月。
+      if (row?.error) partial = true
+      const ok = row !== undefined && (!row.error || hasCachedMonthData(row))
 
       // 范围之前的月份：整体计入「累计」基线。
       if (key < fromMonth) {
@@ -933,10 +1031,11 @@ export class UsageService {
     }
   }
 
-  /** 当前快照（供 client 端渲染）。 */
-  async snapshot(): Promise<UsageSnapshot> {
+  /** 当前快照（供 client 端渲染）。`todayBasis` 决定今日/当周/当月这三张自然日历卡用哪个日界。 */
+  async snapshot(opts: SnapshotOptions = {}): Promise<UsageSnapshot> {
+    const basis: TodayBasis = opts.todayBasis === 'local' ? 'local' : 'platform'
     const auth = await this.opts.authState()
-    const cards = await this.buildCards()
+    const { cards, fellBack } = await this.buildCards(basis)
     const report = this.report()
 
     const cardOf = (scope: UsageScope): ScopeStat =>
@@ -945,8 +1044,18 @@ export class UsageService {
     const sourceOf = (scope: UsageScope): CardSourceInfo['kind'] | undefined =>
       cards.find((c) => c.scope === scope)?.source?.kind
     /** 尚未回补完时只是部分合计，由 `costComplete` 标注。 */
-    const moneyOf = (scope: UsageScope): number =>
-      scope === 'total' ? moneyTotal(report.grand.cost) : moneyTotal(cardOf(scope).cost)
+    const now = this.now()
+    const moneyOf = (scope: UsageScope): number => {
+      if (scope === 'total') return moneyTotal(report.grand.cost)
+      // 金额只有平台计价，而平台切不到本机 0 点：本机日口径下这三张卡没有金额，紧凑条若显式配置了
+      // 它们的金额，就退回平台日的同一窗口，免得把「没有金额」显示成 ¥0。
+      if (basis === 'local' && (scope === 'today' || scope === 'week' || scope === 'month')) {
+        const w =
+          scope === 'today' ? todayWindow(now) : scope === 'week' ? weekWindow(now) : monthWindow(now)
+        return moneyTotal(this.mergedWindow(w).stat.cost)
+      }
+      return moneyTotal(cardOf(scope).cost)
+    }
 
     // 一个 scope 可能产出两项（今日 token 后面紧跟着今日请求数），所以用 flatMap。
     const compact = this.config.compactMetrics.flatMap((metric): UsageSnapshot['compact'] => {
@@ -955,6 +1064,9 @@ export class UsageService {
         label,
         value: cardOf(scope).totalTokens,
         source: sourceOf(scope),
+        ...(cards.find((c) => c.scope === scope)?.source?.hitRate !== undefined
+          ? { hitRate: cards.find((c) => c.scope === scope)!.source!.hitRate }
+          : {}),
       })
       const money = (scope: UsageScope, label: string) => ({
         scope,
@@ -966,11 +1078,14 @@ export class UsageService {
         // 金额不在这里顺带输出：需要金额就显式写 `cost_total`，否则 `[total, cost_total]` 会出现两个相同的值。
         case 'total':
           return [tokens('total', '总')]
-        case 'today':
+        case 'today': {
+          // 本机日口径下这张卡不再含别的设备，标签随之改掉，避免和「平台日」混淆。
+          const label = basis === 'local' && !fellBack ? '本日' : '今日'
           return [
-            tokens('today', '今日'),
+            tokens('today', label),
             { scope: 'today', label: '请求', value: cardOf('today').requests, unit: 'requests', source: sourceOf('today') },
           ]
+        }
         case 'week':
           return [tokens('week', '本周')]
         case 'month':
@@ -1002,6 +1117,9 @@ export class UsageService {
       error: this.lastError?.message,
       costComplete: report.costComplete,
       currency: this.currencyCode,
+      /** 界面据此在自然日历这三张卡的日界上说实话：本机日不可用时已回退成平台日。 */
+      basis: { kind: fellBack ? 'platform' : basis, fellBack },
+      ...(this.briefInsights() ? { insights: this.briefInsights()! } : {}),
       ...this.accountForSnapshot(),
       ...(this.config.localUsage
         ? {
@@ -1043,6 +1161,19 @@ export class UsageService {
     }
   }
 
+  /** 详情页那套指标的摘要版本，供展开面板与紧凑条 tooltip 直接用。 */
+  private briefInsights(): UsageSnapshot['insights'] {
+    const ins = this.opts.localUsage?.current.insights
+    if (!ins || !this.config.localUsage) return undefined
+    return {
+      ttftAvgMs: ins.ttft.avgMs,
+      tpsAvg: ins.tps.avg,
+      toolCalls: ins.toolCalls,
+      toolErrorRate: ins.toolErrorRate,
+      edits: ins.edits.calls,
+    }
+  }
+
   /** 详细视图数据：按模型 / 年 / 月 / 天。 */
   detail(): DetailData {
     const report = this.report()
@@ -1067,7 +1198,7 @@ export class UsageService {
       .sort((a, b) => a.key.localeCompare(b.key))
 
     const months: StatRow[] = report.monthly
-      .filter((r) => r.stat && !r.error)
+      .filter((r) => r.stat && (!r.error || hasCachedMonthData(r)))
       .map((r) => {
         const key = monthKey(r.year, r.month)
         return { key, label: key, stat: toScopeStat(r.stat, r.cost, r.currency ?? currency) }
@@ -1085,8 +1216,79 @@ export class UsageService {
       years,
       months,
       days,
+      breakdown: this.breakdown(),
+      ...this.estimates(report),
       ...(localModels.length > 0 ? { modelsIncludeLocal: true } : {}),
       ...this.localDetail(),
+    }
+  }
+
+  /**
+   * 项目与对话的金额估算依据：平台账单没有这两个维度，只能拿平台各类型的
+   * 「总计金额 ÷ 总计用量」当单价，再乘本机各类型的用量。界面必须把这些金额标成估算。
+   *
+   * 单价用总计而不是当月：缓存命中价与未命中价差一个数量级，用当月会受当月组成影响；
+   * 总量口径的单价更稳定，也更接近按 token 类型计费的真实规则。
+   */
+  private estimates(report: HistoryReport): Pick<DetailData, 'unitPrices' | 'conversations'> {
+    const cost = report.grand.cost
+    const raw = report.grand.raw
+    const unitPrices: Record<string, number> = {}
+    if (cost) {
+      for (const t of TOKEN_TYPES) {
+        if (t === 'REQUEST' || raw[t] <= 0) continue
+        unitPrices[t] = (cost[t] ?? 0) / raw[t]
+      }
+    }
+    const sessions = this.opts.localUsage?.current.insights?.sessions ?? []
+    return {
+      ...(Object.keys(unitPrices).length > 0 ? { unitPrices } : {}),
+      ...(sessions.length > 0 ? { conversations: sessions.slice(0, 60) } : {}),
+    }
+  }
+
+  /**
+   * 「拆分」页签的口径窗口：总计 / 当月 / 今日，都是平台口径 —— token 与金额来自同一批调用，
+   * 命中率、花费占比才有意义（本机日志没有计价能力，掺进来会让分母不一致）。
+   *
+   * `partial` 表示窗口内有天缺金额：历史月份可能还没回补完，当天则要等平台结算。
+   */
+  private breakdown(): UsageBreakdown {
+    const report = this.report()
+    const currency = this.currencyCode
+    const now = this.now()
+
+    /** 按窗口内的逐日明细累加 token 与金额（金额按天存在，缺天要标出来）。 */
+    const windowOf = (from: string, to: string): BreakdownWindow => {
+      const days = this.daysInRange(from, to).filter((d) => inWindow(d.date, { from, to }))
+      const stat = emptyStat()
+      const cost = emptyMoney()
+      let hasCost = false
+      let missing = days.length === 0
+      for (const d of days) {
+        addInto(stat, d.stat)
+        if (d.cost) {
+          hasCost = true
+          addMoneyInto(cost, d.cost)
+        } else if (tokenTotal(d.stat) > 0 || d.stat.REQUEST > 0) {
+          // 只有「有用量却没有金额」才算缺失：平台不给零用量的日子发金额条目，
+          // 把它当缺失会让每个月的 partial 永远是 true。
+          missing = true
+        }
+      }
+      return {
+        stat: toScopeStat(stat, hasCost ? cost : undefined, currency),
+        currency,
+        partial: missing,
+      }
+    }
+
+    const month = monthWindow(now)
+    const today = todayWindow(now)
+    return {
+      total: { stat: report.grand, currency, partial: !report.costComplete },
+      month: windowOf(month.from, month.to),
+      today: windowOf(today.from, today.to),
     }
   }
 
@@ -1124,12 +1326,20 @@ export class UsageService {
    * 本机口径的「供应商 · 模型」明细（详细数据页签用）：平台账单按模型给总量、且只覆盖 DeepSeek
    * 官方通道，这里回答另一半 —— 本机用过的每家供应商的每个模型用了多少。数据来自会话日志，所以只覆盖日志还在的那些天。
    */
-  private localDetail(): Pick<DetailData, 'providers' | 'localRange' | 'localUnavailable'> {
+  private localDetail(): Pick<
+    DetailData,
+    'providers' | 'localRange' | 'localUnavailable' | 'insights' | 'insightsUnavailable'
+  > {
     const local = this.opts.localUsage?.current
-    if (!this.config.localUsage) return { localUnavailable: { reason: 'disabled' } }
-    if (!local || local.days.length === 0) {
-      return { localUnavailable: { reason: local?.reason ?? 'no-session-logs' } }
+    if (!this.config.localUsage) {
+      return { localUnavailable: { reason: 'disabled' }, insightsUnavailable: { reason: 'disabled' } }
     }
+    if (!local || local.days.length === 0) {
+      const reason = local?.reason ?? 'no-session-logs'
+      return { localUnavailable: { reason }, insightsUnavailable: { reason } }
+    }
+    const insights = local.insights
+    // 没有过程指标只影响那两个页签：供应商明细照常要算，不能因此整块返回。
 
     const acc = new Map<string, { label: string; provider: string; stat: Stat }>()
     for (const day of local.days) {
@@ -1154,6 +1364,7 @@ export class UsageService {
 
     return {
       providers,
+      ...(insights ? { insights } : { insightsUnavailable: { reason: 'no-usage-in-window' } }),
       localRange: {
         from: local.days[0]!.date,
         to: local.days[local.days.length - 1]!.date,

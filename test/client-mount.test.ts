@@ -140,9 +140,10 @@ function snapshotFixture(overrides: Partial<UsageSnapshot> = {}): UsageSnapshot 
       { scope: 'week', label: '当周消耗', stat: scopeStat(320_000, 9000, 88) },
       { scope: 'month', label: '当月消耗', stat: scopeStat(1_200_000, 30_000, 300) },
     ],
+    insights: { ttftAvgMs: 1500, tpsAvg: 50, toolCalls: 260, toolErrorRate: 0.01, edits: 42 },
     compact: [
       { scope: 'total', label: '总', value: 1_650_399_575 },
-      { scope: 'today', label: '今日', value: 46_800 },
+      { scope: 'today', label: '今日', value: 46_800, hitRate: 0.98 },
       // 今日请求数：紧跟在今日 token 右侧（同一个 scope，用 unit 区分）
       { scope: 'today', label: '请求', value: 1600, unit: 'requests' },
       { scope: 'week', label: '本周', value: 329_000 },
@@ -156,6 +157,35 @@ function snapshotFixture(overrides: Partial<UsageSnapshot> = {}): UsageSnapshot 
   }
 }
 
+/** 拆分页签的口径窗口：token 与金额同源，占比才有意义。 */
+function breakdownWindow(hit: number, miss: number, out: number, requests: number, money?: { hit: number; miss: number; out: number }) {
+  const raw = statWith(hit, out, requests)
+  raw.PROMPT_CACHE_MISS_TOKEN = miss
+  return {
+    stat: {
+      raw,
+      inputTokens: hit + miss,
+      outputTokens: out,
+      totalTokens: hit + miss + out,
+      requests,
+      ...(money
+        ? {
+            cost: {
+              PROMPT_TOKEN: 0,
+              PROMPT_CACHE_HIT_TOKEN: money.hit,
+              PROMPT_CACHE_MISS_TOKEN: money.miss,
+              RESPONSE_TOKEN: money.out,
+              REQUEST: 0,
+            },
+            currency: 'CNY',
+          }
+        : {}),
+    },
+    currency: 'CNY',
+    partial: false,
+  }
+}
+
 const detailFixture = {
   models: [
     { key: 'deepseek-flash', label: 'deepseek-flash', stat: scopeStat(1000, 500, 3) },
@@ -164,6 +194,41 @@ const detailFixture = {
   years: [{ key: '2026', label: '2026 年', stat: scopeStat(3000, 600, 4) }],
   months: [{ key: '2026-09', label: '2026-09', stat: scopeStat(3000, 600, 4) }],
   days: [{ key: '2026-09-01', label: '2026-09-01', stat: scopeStat(3000, 600, 4) }],
+  breakdown: {
+    total: breakdownWindow(8000, 2000, 500, 40, { hit: 8, miss: 2, out: 5 }),
+    month: breakdownWindow(1000, 100, 50, 5, { hit: 1, miss: 0.1, out: 0.5 }),
+    today: breakdownWindow(100, 10, 5, 1, { hit: 0.1, miss: 0.01, out: 0.05 }),
+  },
+  unitPrices: { PROMPT_CACHE_HIT_TOKEN: 0.0001, RESPONSE_TOKEN: 0.0002 },
+  insights: {
+    window: { from: '2026-09-01', to: '2026-09-30', files: 12 },
+    calls: 100,
+    ttft: { avgMs: 1500, samples: 100 },
+    tpot: { avgMs: 20 },
+    tps: { avg: 50, peak: 80 },
+    tpm: { avg: 1000, peak: 2000, minutes: 10 },
+    rpm: { avg: 5, peak: 9 },
+    steps: { total: 300, turns: 100, avgPerTurn: 3, maxPerTurn: 9, buckets: [50, 40, 10, 0, 0, 0] },
+    stepHitBuckets: [2, 3, 5, 10, 80],
+    sessions: [
+      { id: 'ab12cd34', from: '2026-09-01', to: '2026-09-02', calls: 10, steps: 20, turns: 2, toolCalls: 30, stat: statWith(8000, 500, 10) },
+    ],
+    loops: { repeatedCalls: 3, maxRepeatRun: 2 },
+    edits: { calls: 42 },
+    toolTimeMs: 60000,
+    toolTimeShare: 0.6,
+    jobs: { total: 5, killed: 1, failed: 0, totalMs: 10000 },
+    tools: [
+      { name: 'agent_teams_update_task', calls: 3, errors: 0, measured: 0, totalMs: 0, avgMs: 0, paramBytes: 10, resultBytes: 0 },
+      { name: 'read', calls: 250, errors: 3, measured: 250, totalMs: 5000, avgMs: 20, paramBytes: 1024, resultBytes: 2048 },
+    ],
+    toolCalls: 260,
+    toolMeasured: 255,
+    nonEmptyResults: 250,
+    resultNonEmptyRate: 250 / 255,
+    tokenEfficiency: 0.0057,
+    toolErrorRate: 3 / 260,
+  },
 }
 
 /** 日历查询用的单月明细（tlogs.month 的返回）。 */
@@ -174,6 +239,7 @@ const monthFixture = {
   models: [{ key: 'deepseek-flash', label: 'deepseek-flash', stat: scopeStat(3000, 600, 4) }],
   days: [
     { key: '2026-09-01', label: '2026-09-01', stat: scopeStat(1000, 100, 1) },
+    { key: '2026-09-15', label: '2026-09-15', stat: scopeStat(0, 0, 0) },
     { key: '2026-09-30', label: '2026-09-30', stat: scopeStat(2000, 500, 3) },
   ],
 }
@@ -582,7 +648,7 @@ test('渲染紧凑条，点击展开后就地展开面板，可进入详细视�
     const tabLabels = Array.from(dialog!.querySelectorAll('.tlogs-tab')).map((t) => t.textContent)
     assert.deepEqual(
       tabLabels,
-      ['日历', '图表', '模型', '供应商', '年', '月', '当月按天', '设置'],
+      ['日历', '图表', '拆分', '模型', '供应商', '性能', '工具', '会话', '年', '月', '当月按天', '设置'],
       '弹窗应有日历、图表、模型、供应商、年/月/当月按天与设置页签',
     )
     // 默认停在日历页，且日历是「周一起始」的 7 列网格
@@ -1194,6 +1260,252 @@ test('图表页签：三张图 + 控制项，切换范围会重新向 host 取�
   }
 })
 
+test('拆分页签：Token 构成 + 花费构成 + 命中率/输出占比 + 项目表', async () => {
+  const client = loadClientBundle()
+  const { ctx, registrations } = makeCtx(snapshotFixture())
+  client.apply(ctx)
+  const reg = registrations[0]!
+  const Component = reg.component as React.ComponentType<Record<string, unknown>>
+  const share = (reg.options.inject as () => Record<string, unknown>)()
+
+  const container = doc().createElement('div')
+  doc().body.appendChild(container)
+  const root: Root = createRoot(container as unknown as Element)
+  const flush = async () => {
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0))
+      await new Promise((r) => setTimeout(r, 0))
+    })
+  }
+
+  try {
+    await act(async () => {
+      root.render(React.createElement(Component, { ...share, wide: true }))
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    const bar = container.querySelector('.tlogs-compact') as unknown as HTMLElement
+    await act(async () => {
+      bar.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    const detailBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+      (b.textContent ?? '').includes('详细数据'),
+    ) as unknown as HTMLElement
+    await act(async () => {
+      detailBtn.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
+      await new Promise((r) => setTimeout(r, 0))
+    })
+
+    const dialog = doc().querySelector('[role="dialog"]')!
+    const tab = Array.from(dialog.querySelectorAll('.tlogs-tab')).find(
+      (t) => t.textContent === '拆分',
+    ) as unknown as HTMLElement
+    assert.ok(tab, '弹窗应有「拆分」页签')
+    await act(async () => {
+      tab.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
+      await new Promise((r) => setTimeout(r, 0))
+    })
+
+    const text = dialog.textContent ?? ''
+    for (const label of ['命中率', '输出占比', 'Token 构成', '花费构成', '缓存命中输入', '缓存未命中输入']) {
+      assert.ok(text.includes(label), `拆分页应包含「${label}」，实际：${text.slice(0, 200)}`)
+    }
+
+    // 命中率 = 8000 / (8000 + 2000) = 80.0%；输出占比 = 500 / 10500 = 4.8%
+    const kpis = Array.from(dialog.querySelectorAll('.tlogs-bd-kpi')).map((e) => e.textContent ?? '')
+    assert.ok(kpis.some((k) => k.includes('80.0%')), `命中率应显示 80.0%，实际：${kpis.join(' | ')}`)
+    assert.ok(kpis.some((k) => k.includes('4.8%')), `输出占比应显示 4.8%，实际：${kpis.join(' | ')}`)
+
+    // 4 类 token + 4 类金额，同序号子对齐
+    assert.equal(dialog.querySelectorAll('.tlogs-bd-row').length, 13, '应有 4 行 token、4 行金额与 5 行步骤命中分布')
+
+    // 项目表用快照里的项目选项（本机口径、无金额）
+    assert.equal(dialog.querySelectorAll('.tlogs-table tbody tr').length, 2, '项目表应有 2 行')
+
+    // 切到「当月」：金额合计变成 ¥1.60，证明口径切换生效
+    const monthBtn = Array.from(dialog.querySelectorAll('.tlogs-ctl-group button')).find(
+      (b) => b.textContent === '当月',
+    ) as unknown as HTMLElement
+    assert.ok(monthBtn, '应有「当月」按钮')
+    await act(async () => {
+      monthBtn.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    const monthKpis = Array.from(dialog.querySelectorAll('.tlogs-bd-kpi')).map((e) => e.textContent ?? '')
+    assert.ok(
+      monthKpis.some((k) => k.includes('1.6')),
+      `当月金额合计应为 ¥1.6，实际：${monthKpis.join(' | ')}`,
+    )
+
+    // 「指定」：月份下拉来自已抓到的月份，日期下拉来自该月的逐日明细（日历已经加载过 2026-09）
+    const customBtn = Array.from(dialog.querySelectorAll('.tlogs-ctl-group button')).find(
+      (b) => b.textContent === '指定',
+    ) as unknown as HTMLElement
+    assert.ok(customBtn, '应有「指定」按钮')
+    await act(async () => {
+      customBtn.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    const daySelect = dialog.querySelector('select[aria-label="日期"]') as HTMLSelectElement
+    assert.ok(daySelect, '「指定」应出现日期下拉')
+    await act(async () => {
+      daySelect.value = '2026-09-30'
+      daySelect.dispatchEvent(new dom.window.Event('change', { bubbles: true }))
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    const dayKpis = Array.from(dialog.querySelectorAll('.tlogs-bd-kpi')).map((e) => e.textContent ?? '')
+    // 2026-09-30：输入 2000、输出 500、无未命中 → 命中率 100.0%、输出占比 20.0%
+    assert.ok(dayKpis.some((k) => k.includes('100.0%')), `指定日命中率应为 100.0%，实际：${dayKpis.join(' | ')}`)
+    assert.ok(dayKpis.some((k) => k.includes('20.0%')), `指定日输出占比应为 20.0%，实际：${dayKpis.join(' | ')}`)
+
+    // 零用量的一天：分母为 0 显示「—」而不是 0.0%，也不该冒充「有天没拿到金额」
+    await act(async () => {
+      daySelect.value = '2026-09-15'
+      daySelect.dispatchEvent(new dom.window.Event('change', { bubbles: true }))
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    const zeroKpis = Array.from(dialog.querySelectorAll('.tlogs-bd-kpi'))
+    const hitKpi = zeroKpis[0]?.textContent ?? ''
+    assert.ok(hitKpi.includes('—'), `零用量日的命中率应显示「—」，实际：${hitKpi}`)
+    assert.equal(
+      (dialog.textContent ?? '').includes('该口径有部分天'),
+      false,
+      '零用量的一天没有金额不算缺失，不应弹「部分天未结算」',
+    )
+  } finally {
+    await act(async () => {
+      root.unmount()
+    })
+    container.remove()
+  }
+})
+
+test('会话页签：一条会话一行，金额按单价估算并标 ≈', async () => {
+  const client = loadClientBundle()
+  const { ctx, registrations } = makeCtx(snapshotFixture())
+  client.apply(ctx)
+  const reg = registrations[0]!
+  const Component = reg.component as React.ComponentType<Record<string, unknown>>
+  const share = (reg.options.inject as () => Record<string, unknown>)()
+
+  const container = doc().createElement('div')
+  doc().body.appendChild(container)
+  const root: Root = createRoot(container as unknown as Element)
+
+  try {
+    await act(async () => {
+      root.render(React.createElement(Component, { ...share, wide: true }))
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    const bar = container.querySelector('.tlogs-compact') as unknown as HTMLElement
+    await act(async () => {
+      bar.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    const detailBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+      (b.textContent ?? '').includes('详细数据'),
+    ) as unknown as HTMLElement
+    await act(async () => {
+      detailBtn.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
+      await new Promise((r) => setTimeout(r, 0))
+    })
+
+    const dialog = doc().querySelector('[role="dialog"]')!
+    const tab = Array.from(dialog.querySelectorAll('.tlogs-tab')).find((t) => t.textContent === '会话') as unknown as HTMLElement
+    assert.ok(tab, '弹窗应有「会话」页签')
+    await act(async () => {
+      tab.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
+      await new Promise((r) => setTimeout(r, 0))
+    })
+
+    const rows = Array.from(dialog.querySelectorAll('.tlogs-table tbody tr')).map((r) => r.textContent ?? '')
+    assert.equal(rows.length, 1, '夹具里只有一条会话')
+    const row = rows[0]!
+    assert.ok(row.includes('ab12cd34'), `会话标签应是短哈希，实际：${row}`)
+    // 估算 = 8000×0.0001 + 500×0.0002 = 0.9
+    assert.ok(row.includes('≈ ¥0.90'), `估算金额应按单价算出 ≈ ¥0.90，实际：${row}`)
+  } finally {
+    await act(async () => {
+      root.unmount()
+    })
+    container.remove()
+  }
+})
+
+test('性能与工具页签：TTFT/步数分布/工具表都按过程指标渲染', async () => {
+  const client = loadClientBundle()
+  const { ctx, registrations } = makeCtx(snapshotFixture())
+  client.apply(ctx)
+  const reg = registrations[0]!
+  const Component = reg.component as React.ComponentType<Record<string, unknown>>
+  const share = (reg.options.inject as () => Record<string, unknown>)()
+
+  const container = doc().createElement('div')
+  doc().body.appendChild(container)
+  const root: Root = createRoot(container as unknown as Element)
+
+  try {
+    await act(async () => {
+      root.render(React.createElement(Component, { ...share, wide: true }))
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    const bar = container.querySelector('.tlogs-compact') as unknown as HTMLElement
+    await act(async () => {
+      bar.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    const detailBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+      (b.textContent ?? '').includes('详细数据'),
+    ) as unknown as HTMLElement
+    await act(async () => {
+      detailBtn.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
+      await new Promise((r) => setTimeout(r, 0))
+    })
+
+    const dialog = doc().querySelector('[role="dialog"]')!
+    const pick = async (label: string) => {
+      const tab = Array.from(dialog.querySelectorAll('.tlogs-tab')).find(
+        (t) => t.textContent === label,
+      ) as unknown as HTMLElement
+      assert.ok(tab, `弹窗应有「${label}」页签`)
+      await act(async () => {
+        tab.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
+        await new Promise((r) => setTimeout(r, 0))
+      })
+    }
+
+    await pick('性能')
+    const perf = dialog.textContent ?? ''
+    for (const label of ['TTFT', 'TPOT', 'TPS 均值', 'TPM 均值', 'RPM 峰值', '步数', '文件编辑', '每轮步数分布', 'Token 效率比']) {
+      assert.ok(perf.includes(label), `性能页应包含「${label}」，实际：${perf.slice(0, 200)}`)
+    }
+    // TTFT 1500ms → 1.50 s；TPS 均值 50.0
+    assert.ok(perf.includes('1.50 s'), `TTFT 应格式化为 1.50 s，实际：${perf.slice(0, 300)}`)
+    assert.ok(perf.includes('50.0'), 'TPS 均值应显示 50.0')
+
+    await pick('工具')
+    const tools = dialog.textContent ?? ''
+    for (const label of ['工具调用', '失败率', 'read', '参数大小', '返回大小', '后台任务', '结果非空率']) {
+      assert.ok(tools.includes(label), `工具页应包含「${label}」，实际：${tools.slice(0, 200)}`)
+    }
+    // read：250 次、平均 20 ms、参数 1.0 KB、返回 2.0 KB
+    const rows = Array.from(dialog.querySelectorAll('.tlogs-table tbody tr')).map((r) => r.textContent ?? '')
+    const readRow = rows.find((r) => r.includes('read')) ?? ''
+    assert.ok(readRow.includes('250'), `read 行应显示 250 次调用，实际：${readRow}`)
+    assert.ok(readRow.includes('20 ms'), `read 行应显示 20 ms 平均耗时，实际：${readRow}`)
+    assert.ok(readRow.includes('1.0 KB'), `参数大小应格式化为 1.0 KB，实际：${readRow}`)
+    assert.ok(readRow.includes('2.0 KB'), `返回大小应格式化为 2.0 KB，实际：${readRow}`)
+    // 没有 tool/result 的调用：平均耗时无法测量，必须显示「—」而不是 0 ms
+    const unmeasured = rows.find((r) => r.includes('agent_teams_update_task')) ?? ''
+    assert.ok(unmeasured.includes('—'), `无结果的工具平均耗时应为「—」，实际：${unmeasured}`)
+  } finally {
+    await act(async () => {
+      root.unmount()
+    })
+    container.remove()
+  }
+})
+
 test('紧凑条与其中的三角按钮各自只切换一次（父级 onClick 不得叠加）', async () => {
   const { container, root } = await mountExpanded(snapshotFixture())
   try {
@@ -1317,7 +1629,7 @@ test('设置页签：三种语言模式，切换即时生效并持久化', async
     await pickLang('en')
     assert.deepEqual(
       tabLabels(),
-      ['Calendar', 'Charts', 'Models', 'Providers', 'Years', 'Months', 'Days', 'Settings'],
+      ['Calendar', 'Charts', 'Breakdown', 'Models', 'Providers', 'Performance', 'Tools', 'Sessions', 'Years', 'Months', 'Days', 'Settings'],
       '切到 English 后页签必须整体变英文',
     )
     assert.equal(
@@ -1340,7 +1652,7 @@ test('设置页签：三种语言模式，切换即时生效并持久化', async
     await pickLang('auto')
     assert.deepEqual(
       tabLabels(),
-      ['日历', '图表', '模型', '供应商', '年', '月', '当月按天', '设置'],
+      ['日历', '图表', '拆分', '模型', '供应商', '性能', '工具', '会话', '年', '月', '当月按天', '设置'],
       '回到「跟随系统」应按宿主语言渲染中文',
     )
     assert.equal(dom.window.localStorage.getItem('tlogs.lang'), 'auto')
@@ -1395,7 +1707,7 @@ test('「跟随系统」在每次重渲染时读取宿主语言（<html lang>）
     await pickTab('日历')
     assert.deepEqual(
       tabLabels(),
-      ['Calendar', 'Charts', 'Models', 'Providers', 'Years', 'Months', 'Days', 'Settings'],
+      ['Calendar', 'Charts', 'Breakdown', 'Models', 'Providers', 'Performance', 'Tools', 'Sessions', 'Years', 'Months', 'Days', 'Settings'],
       '「跟随系统」应在重渲染后跟着 <html lang> 变英文',
     )
 
@@ -1455,7 +1767,7 @@ test('余额高频通道由展开面板开关：展开 on=true 并立刻取回�
   await click(container.querySelector('button[aria-label*="展开"]')!)
   assert.deepEqual(
     watches().map((w) => w.payload),
-    [{ on: true }],
+    [{ on: true, todayBasis: 'platform' }],
     '展开面板必须打开余额通道（并借此立刻取回一次快照）',
   )
   assert.ok(container.querySelector('.tlogs-panel'), '面板应已展开')
@@ -1463,7 +1775,7 @@ test('余额高频通道由展开面板开关：展开 on=true 并立刻取回�
   await click(container.querySelector('button[aria-label*="收起"]')!)
   assert.deepEqual(
     watches().map((w) => w.payload),
-    [{ on: true }, { on: false }],
+    [{ on: true, todayBasis: 'platform' }, { on: false, todayBasis: 'platform' }],
     '收起面板必须关掉余额通道',
   )
   assert.equal(container.querySelector('.tlogs-panel'), null)
@@ -1475,7 +1787,7 @@ test('余额高频通道由展开面板开关：展开 on=true 并立刻取回�
   container.remove()
   assert.deepEqual(
     watches().map((w) => w.payload),
-    [{ on: true }, { on: false }],
+    [{ on: true, todayBasis: 'platform' }, { on: false, todayBasis: 'platform' }],
     '卸载时面板已收起，不该再多发一次开关；但绝不能少关',
   )
 })
@@ -1526,7 +1838,7 @@ test('卸载时面板仍开着 → 必须补发 on=false（不然宿主定时器
     await new Promise((r) => setTimeout(r, 0))
   })
   const opened = payloads.filter((p) => p.endpoint === 'tlogs.balanceWatch')
-  assert.deepEqual(opened.map((p) => p.payload), [{ on: true }], '默认展开时应已打开余额通道')
+  assert.deepEqual(opened.map((p) => p.payload), [{ on: true, todayBasis: 'platform' }], '默认展开时应已打开余额通道')
 
   await act(async () => {
     root.unmount()
@@ -1535,7 +1847,7 @@ test('卸载时面板仍开着 → 必须补发 on=false（不然宿主定时器
   container.remove()
 
   const all = payloads.filter((p) => p.endpoint === 'tlogs.balanceWatch')
-  assert.deepEqual(all.map((p) => p.payload), [{ on: true }, { on: false }], '卸载必须兜底关掉余额通道')
+  assert.deepEqual(all.map((p) => p.payload), [{ on: true, todayBasis: 'platform' }, { on: false, todayBasis: 'platform' }], '卸载必须兜底关掉余额通道')
 })
 
 test('宿主没有余额通道（旧版 host）时客户端照常工作', async () => {

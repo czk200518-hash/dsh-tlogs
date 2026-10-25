@@ -16,6 +16,15 @@ export function dateKey(d: Date): string {
   return `${y}-${m}-${day}`
 }
 
+/**
+ * 本机日历日键（`YYYY-MM-DD`）。与 `dateKey` 的差别只在日界：这里是本机 00:00，`dateKey` 是
+ * 08:00（北京）。会话日志的样本带精确时间戳，所以「本机今天用了多少」能按本机日历日算；
+ * 平台账单只有 UTC 日粒度，切不开，那边的窗口仍旧走 `dateKey`。
+ */
+export function localDateKey(d: Date): string {
+  return dateKey(new Date(d.getTime() - d.getTimezoneOffset() * 60_000))
+}
+
 /** 平台当天 00:00:00.000（UTC）。 */
 export function startOfDay(d: Date): Date {
   const x = new Date(d)

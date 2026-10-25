@@ -20,18 +20,29 @@ Expanding it shows seven cards:
 | --- | --- |
 | Compact bar | total, today, requests. `↻` refresh, `▾` expand |
 | Expand panel | total, current project, today, this week, this month, last 7 days, last 30 days |
-| Detail modal | calendar, charts, models, providers, years, months, days, settings |
+| Detail modal | calendar, charts, breakdown, models, providers, performance, tools, sessions, years, months, days, settings |
 
-## Language
+## Settings
 
-Switch the plugin's UI language in the **Settings** tab of the detail modal:
+Switch these in the **Settings** tab of the detail modal; each choice is stored in this browser and survives restarts.
+
+**Language**
 
 | Choice | Meaning |
 | --- | --- |
 | Follow system (default) | DSH UI language → browser language → Chinese |
 | 中文 / English | always that language |
 
-The choice is stored in this browser and survives restarts; it only affects this plugin's UI, never DSH's own language.
+It only affects this plugin's UI, never DSH's own language.
+
+**Day boundary**
+
+| Choice | Meaning |
+| --- | --- |
+| Platform day (default) | The bill's UTC day, rolling over at 08:00 Beijing; includes other devices and money |
+| Local day | Rolls over at local 00:00; this machine's session logs only, no money (days whose logs were cleaned up are missing) |
+
+Applies to the Today / this week / this month cards. When the local basis is unavailable they fall back to the platform day, and the panel says so.
 
 ## Detail data
 
@@ -46,6 +57,15 @@ The modal is organized by tabs. The three **charts** share one set of controls (
 The **calendar** tab lists per-day usage and cost for a month; click a day for that day's breakdown:
 
 <img src="docs/images/detail-calendar.png" alt="Calendar" width="70%">
+
+The **breakdown** tab shows composition: cached / uncached / output tokens and their cost shares, the cache hit rate and the output share, switchable between all time / this month / today, or any month and day. Below it is the per-project table on the local basis (platform billing has no project dimension, so no money there).
+
+The **performance** tab shows process metrics: TTFT, TPOT, TPS, TPM / RPM (average and peak), plus steps, steps per turn, repeated calls, file edits and the tool-time share.
+The **tools** tab lists per-tool calls, failures, average / total time and argument / result sizes (top 40).
+
+The **sessions** tab lists one row per session (the label is an irreversible short hash; no paths are kept): dates, calls, steps, tool calls, tokens and an **estimated amount**. Project amounts are estimated the same way — from the platform per-type unit price — and marked as estimates, because the bill has no project or conversation dimension.
+
+Both tabs read session-log metadata only (timestamps, tool names, argument lengths, `isError`, background job status and timings) — never message bodies — and cover only the days whose logs still exist, same window as the providers tab.
 
 ## Data sources
 
